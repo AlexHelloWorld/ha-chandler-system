@@ -1,0 +1,39 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Springwell Water Softener",
+        "description": "Enter your Springwell softener's Bluetooth address. You can find this in your device's Bluetooth settings.",
+        "data": {
+          "device_address": "Bluetooth Address",
+          "device_name": "Device Name"
+        },
+        "data_description": {
+          "device_address": "The Bluetooth MAC address of your softener (e.g., AA:BB:CC:DD:EE:FF)",
+          "device_name": "A friendly name for your softener"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the device",
+      "unknown": "An unknown error occurred"
+    },
+    "abort": {
+      "already_configured": "This device is already configured"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "salt_level": {
+        "name": "Salt Level"
+      },
+      "water_flow": {
+        "name": "Water Flow"
+      },
+      "regeneration_status": {
+        "name": "Regeneration Status"
+      }
+    }
+  }
+}
+

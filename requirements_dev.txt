@@ -1,0 +1,17 @@
+# Development dependencies
+homeassistant>=2024.1.0
+bleak>=0.21.0
+
+# Testing
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-homeassistant-custom-component>=0.13.0
+
+# Code quality
+ruff>=0.1.0
+black>=23.0.0
+mypy>=1.0.0
+
+# Pre-commit hooks
+pre-commit>=3.0.0
+

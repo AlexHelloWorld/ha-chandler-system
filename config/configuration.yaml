@@ -1,0 +1,20 @@
+# Home Assistant Configuration for Development
+
+# Minimal configuration for testing custom integrations
+homeassistant:
+  name: Development
+  unit_system: imperial
+  time_zone: America/Los_Angeles
+  
+# Enable the frontend
+frontend:
+
+# Enable configuration UI
+config:
+
+# Enables logging for debugging
+logger:
+  default: info
+  logs:
+    custom_components.springwell_softener: debug
+
