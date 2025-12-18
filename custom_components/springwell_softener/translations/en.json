@@ -2,38 +2,91 @@
   "config": {
     "step": {
       "user": {
-        "title": "Set up Springwell Water Softener",
-        "description": "Enter your Springwell softener's Bluetooth address. You can find this in your device's Bluetooth settings.",
+        "title": "Springwell Water Softener",
+        "description": "Enter your Springwell Water Softener's Bluetooth address and authentication token. You can find the auth token in the Springwell app under API settings.",
         "data": {
-          "device_address": "Bluetooth Address",
+          "device_address": "Device Address",
+          "auth_token": "Authentication Token",
           "device_name": "Device Name"
         },
         "data_description": {
-          "device_address": "The Bluetooth MAC address of your softener (e.g., AA:BB:CC:DD:EE:FF)",
-          "device_name": "A friendly name for your softener"
+          "device_address": "Bluetooth MAC address or UUID of your softener",
+          "auth_token": "API authentication token from the Springwell app",
+          "device_name": "A friendly name for your device"
         }
       }
     },
     "error": {
-      "cannot_connect": "Failed to connect to the device",
-      "unknown": "An unknown error occurred"
+      "invalid_auth_token": "Invalid authentication token. Please enter a valid UUID.",
+      "cannot_connect": "Failed to connect to the device. Please check the address and ensure the device is powered on.",
+      "unknown": "An unknown error occurred."
     },
     "abort": {
-      "already_configured": "This device is already configured"
+      "already_configured": "This device is already configured."
     }
   },
   "entity": {
     "sensor": {
+      "water_used_today": {
+        "name": "Water Used Today"
+      },
+      "average_water_used": {
+        "name": "Average Daily Water Usage"
+      },
+      "total_gallons_remaining": {
+        "name": "Treated Water Remaining"
+      },
+      "total_gallons": {
+        "name": "Total Gallons Processed"
+      },
+      "gallons_since_last_regen": {
+        "name": "Gallons Since Last Regeneration"
+      },
+      "present_flow": {
+        "name": "Current Flow Rate"
+      },
+      "peak_flow_daily": {
+        "name": "Peak Flow Today"
+      },
+      "days_until_regen": {
+        "name": "Days Until Regeneration"
+      },
+      "days_since_last_regen": {
+        "name": "Days Since Last Regeneration"
+      },
+      "regen_counter": {
+        "name": "Total Regeneration Cycles"
+      },
+      "regen_active": {
+        "name": "Regeneration Active"
+      },
       "salt_level": {
         "name": "Salt Level"
       },
-      "water_flow": {
-        "name": "Water Flow"
+      "salt_remaining": {
+        "name": "Salt Remaining"
       },
-      "regeneration_status": {
-        "name": "Regeneration Status"
+      "salt_low": {
+        "name": "Salt Low Alert"
+      },
+      "water_hardness": {
+        "name": "Water Hardness"
+      },
+      "battery_level": {
+        "name": "Battery Voltage"
+      },
+      "days_in_operation": {
+        "name": "Days In Operation"
+      },
+      "valve_error": {
+        "name": "Valve Error"
+      },
+      "reserve_capacity_gallons": {
+        "name": "Reserve Capacity"
+      },
+      "total_grains_capacity": {
+        "name": "Total Grains Capacity"
       }
     }
   }
 }
-

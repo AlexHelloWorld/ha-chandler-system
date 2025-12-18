@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     DOMAIN,
@@ -27,13 +29,14 @@ async def async_setup_entry(
     _LOGGER.info("Setting up Springwell Softener sensors")
 
     data = hass.data[DOMAIN][entry.entry_id]
+    coordinator = data["coordinator"]
     device_address = data["device_address"]
     device_name = data["device_name"]
 
     # Create one sensor entity for each description
-    # This is much cleaner than having separate classes!
     sensors = [
         SpringwellSensor(
+            coordinator=coordinator,
             description=description,
             device_address=device_address,
             device_name=device_name,
@@ -41,23 +44,22 @@ async def async_setup_entry(
         for description in SENSOR_DESCRIPTIONS
     ]
 
-    async_add_entities(sensors, update_before_add=True)
+    async_add_entities(sensors)
 
 
-class SpringwellSensor(SensorEntity):
-    """Generic sensor for Springwell Water Softener.
+class SpringwellSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for Springwell Water Softener.
 
-    This single class handles ALL sensor types. The behavior is controlled
-    by the SpringwellSensorEntityDescription passed to the constructor.
+    This sensor uses the CoordinatorEntity pattern to efficiently
+    share data updates across all sensors from a single device.
     """
 
     _attr_has_entity_name = True
-
-    # This tells HA to use description attributes automatically
     entity_description: SpringwellSensorEntityDescription
 
     def __init__(
         self,
+        coordinator: Any,
         description: SpringwellSensorEntityDescription,
         device_address: str,
         device_name: str,
@@ -65,20 +67,16 @@ class SpringwellSensor(SensorEntity):
         """Initialize the sensor.
 
         Args:
+            coordinator: The data update coordinator
             description: Defines this sensor's name, unit, icon, etc.
             device_address: Bluetooth MAC address of the softener
             device_name: User-friendly name for the device
         """
-        # Setting entity_description automatically applies:
-        # - name, icon, device_class, state_class
-        # - native_unit_of_measurement, etc.
-        self.entity_description = description
+        super().__init__(coordinator)
 
+        self.entity_description = description
         self._device_address = device_address
         self._device_name = device_name
-
-        # Set initial mock value (for testing without real device)
-        self._attr_native_value = description.mock_value
 
         # Unique ID combines device address + sensor key
         self._attr_unique_id = f"{device_address}_{description.key}"
@@ -94,12 +92,36 @@ class SpringwellSensor(SensorEntity):
             sw_version="0.1.0",
         )
 
-    async def async_update(self) -> None:
-        """Fetch new state data for this sensor.
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        # Check coordinator availability and that we have data
+        return (
+            super().available
+            and self.coordinator.data is not None
+        )
 
-        TODO: Implement actual Bluetooth read based on entity_description.key
-        """
-        key = self.entity_description.key
-        _LOGGER.debug("Updating Springwell sensor: %s", key)
+    @property
+    def native_value(self) -> Any:
+        """Return the state of the sensor."""
+        if self.coordinator.data is None:
+            return None
 
-        # Future: read from Bluetooth and update self._attr_native_value
+        # Use the value_fn from the description to extract the value
+        if self.entity_description.value_fn is not None:
+            try:
+                return self.entity_description.value_fn(self.coordinator.data)
+            except Exception as e:
+                _LOGGER.debug(
+                    "Error getting value for %s: %s",
+                    self.entity_description.key,
+                    e,
+                )
+                return None
+
+        return None
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        self.async_write_ha_state()
