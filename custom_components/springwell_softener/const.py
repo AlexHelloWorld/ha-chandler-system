@@ -17,14 +17,27 @@ from homeassistant.const import (
 
 DOMAIN = "springwell_softener"
 
+# Bluetooth UUIDs
+# Advertised service UUID (for discovery)
+SERVICE_UUID_ADVERTISED = "8d53dc1d-1db7-4cd3-868b-8a527460aa84"
+# GATT service UUID (for communication)
+SERVICE_UUID_GATT = "a725458c-bee1-4d2e-9555-edf5a8082303"
+# Characteristic UUIDs
+CHAR_UUID_READ = "a725458c-bee2-4d2e-9555-edf5a8082303"
+CHAR_UUID_WRITE = "a725458c-bee3-4d2e-9555-edf5a8082303"
+# Manufacturer ID (Chandler Systems, Inc.)
+MANUFACTURER_ID = 1850
+
 # Configuration keys
 CONF_DEVICE_ADDRESS = "device_address"
 CONF_DEVICE_NAME = "device_name"
 CONF_AUTH_TOKEN = "auth_token"
+CONF_DISCOVERED_DEVICE = "discovered_device"
 
 # Default values
 DEFAULT_NAME = "Springwell Softener"
 DEFAULT_SCAN_INTERVAL = 60  # seconds
+CONNECTION_TIMEOUT = 30.0  # seconds
 
 
 @dataclass(frozen=True, kw_only=True)

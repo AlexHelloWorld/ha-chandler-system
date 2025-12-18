@@ -3,22 +3,41 @@
     "step": {
       "user": {
         "title": "Springwell Water Softener",
-        "description": "Enter your Springwell Water Softener's Bluetooth address and authentication token. You can find the auth token in the Springwell app under API settings.",
+        "description": "Select a discovered Springwell device or enter an address manually.",
         "data": {
-          "device_address": "Device Address",
+          "address": "Device"
+        }
+      },
+      "bluetooth_confirm": {
+        "title": "Confirm Device Setup",
+        "description": "Found {name} ({address}). Enter the authentication token from the Springwell app to complete setup.",
+        "data": {
           "auth_token": "Authentication Token",
           "device_name": "Device Name"
         },
         "data_description": {
-          "device_address": "Bluetooth MAC address or UUID of your softener",
-          "auth_token": "API authentication token from the Springwell app",
-          "device_name": "A friendly name for your device"
+          "auth_token": "API token from Springwell app (Settings > API)",
+          "device_name": "A friendly name for this device"
+        }
+      },
+      "manual_auth": {
+        "title": "Manual Configuration",
+        "description": "Enter the device address and authentication token.",
+        "data": {
+          "address": "Device Address",
+          "auth_token": "Authentication Token",
+          "device_name": "Device Name"
+        },
+        "data_description": {
+          "address": "Bluetooth address of your Springwell device",
+          "auth_token": "API token from Springwell app (Settings > API)",
+          "device_name": "A friendly name for this device"
         }
       }
     },
     "error": {
-      "invalid_auth_token": "Invalid authentication token. Please enter a valid UUID.",
-      "cannot_connect": "Failed to connect to the device. Please check the address and ensure the device is powered on.",
+      "invalid_auth_token": "Invalid authentication token. Enter a valid UUID.",
+      "cannot_connect": "Failed to connect. Check the device is powered on.",
       "unknown": "An unknown error occurred."
     },
     "abort": {

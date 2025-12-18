@@ -5,9 +5,11 @@ import asyncio
 import logging
 from datetime import timedelta
 
+from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
+from homeassistant.const import CONF_ADDRESS, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
@@ -16,7 +18,6 @@ from homeassistant.helpers.update_coordinator import (
 from .client import SoftenerData, SpringwellClient
 from .const import (
     CONF_AUTH_TOKEN,
-    CONF_DEVICE_ADDRESS,
     CONF_DEVICE_NAME,
     DEFAULT_NAME,
     DEFAULT_SCAN_INTERVAL,
@@ -25,24 +26,21 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# List of platforms to support
 PLATFORMS: list[Platform] = [Platform.SENSOR]
-
-# Update interval for the coordinator
 UPDATE_INTERVAL = timedelta(seconds=DEFAULT_SCAN_INTERVAL)
 
 
 class SpringwellDataUpdateCoordinator(DataUpdateCoordinator[SoftenerData]):
     """Coordinator to manage data updates from the Springwell device.
 
-    This coordinator maintains a persistent Bluetooth connection to the device
-    and receives push updates when the device state changes.
+    Maintains a persistent Bluetooth connection and receives push updates.
     """
 
     def __init__(
         self,
         hass: HomeAssistant,
-        client: SpringwellClient,
+        address: str,
+        auth_token: str,
         device_name: str,
     ) -> None:
         """Initialize the coordinator."""
@@ -52,13 +50,11 @@ class SpringwellDataUpdateCoordinator(DataUpdateCoordinator[SoftenerData]):
             name=f"Springwell {device_name}",
             update_interval=UPDATE_INTERVAL,
         )
-        self._client = client
+        self._address = address
+        self._auth_token = auth_token
         self._device_name = device_name
+        self._client: SpringwellClient | None = None
         self._connection_lock = asyncio.Lock()
-        self._reconnect_task: asyncio.Task | None = None
-
-        # Set the client's data callback to trigger coordinator updates
-        self._client._data_callback = self._on_data_received
 
     def _on_data_received(self, data: SoftenerData) -> None:
         """Handle new data received from the device."""
@@ -66,101 +62,101 @@ class SpringwellDataUpdateCoordinator(DataUpdateCoordinator[SoftenerData]):
         self.async_set_updated_data(data)
 
     @property
-    def client(self) -> SpringwellClient:
+    def client(self) -> SpringwellClient | None:
         """Return the Bluetooth client."""
         return self._client
+
+    @property
+    def address(self) -> str:
+        """Return the device address."""
+        return self._address
 
     async def _async_update_data(self) -> SoftenerData:
         """Fetch data from the device.
 
-        This is called periodically by the coordinator. Since the device
-        pushes data to us, we mainly use this to ensure the connection
-        is still active and reconnect if needed.
+        Called periodically. Ensures connection is active and reconnects
+        if needed.
         """
         async with self._connection_lock:
-            # Check if we need to reconnect
+            # Get current BLE device from HA's bluetooth
+            ble_device = bluetooth.async_ble_device_from_address(
+                self.hass, self._address, connectable=True
+            )
+
+            if ble_device is None:
+                raise UpdateFailed(
+                    f"Device {self._address} not found. "
+                    "Is it powered on and in range?"
+                )
+
+            # Check if we need to create or update client
+            if self._client is None:
+                self._client = SpringwellClient(
+                    ble_device=ble_device,
+                    auth_token=self._auth_token,
+                    data_callback=self._on_data_received,
+                )
+            else:
+                # Update BLE device (address may be stale)
+                self._client.set_ble_device(ble_device)
+
+            # Connect if not connected
             if not self._client.is_connected:
-                _LOGGER.info("Connection lost, attempting to reconnect...")
+                _LOGGER.info("Connecting to Springwell device...")
                 try:
                     if not await self._client.connect():
-                        raise UpdateFailed("Failed to reconnect to device")
-                    _LOGGER.info("Reconnected successfully")
+                        raise UpdateFailed("Failed to connect to device")
+                    _LOGGER.info("Connected successfully")
                 except Exception as e:
-                    raise UpdateFailed(f"Failed to reconnect: {e}") from e
+                    raise UpdateFailed(f"Connection failed: {e}") from e
 
-            # Return the current data
             return self._client.data
 
-    async def async_connect(self) -> bool:
-        """Connect to the device."""
-        async with self._connection_lock:
-            if self._client.is_connected:
-                return True
-
-            _LOGGER.info("Connecting to Springwell device...")
-            try:
-                result = await self._client.connect()
-                if result:
-                    _LOGGER.info("Connected to Springwell device")
-                    # Initial data is available after connection
-                    self.async_set_updated_data(self._client.data)
-                return result
-            except Exception as e:
-                _LOGGER.error("Failed to connect: %s", e)
-                return False
-
-    async def async_disconnect(self) -> None:
+    async def async_shutdown(self) -> None:
         """Disconnect from the device."""
         async with self._connection_lock:
-            await self._client.disconnect()
+            if self._client:
+                await self._client.disconnect()
+                self._client = None
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Springwell Water Softener from a config entry.
-
-    This is called when Home Assistant loads the integration after
-    the user has completed the config flow.
-    """
+    """Set up Springwell Water Softener from a config entry."""
     _LOGGER.info("Setting up Springwell Softener integration")
 
-    device_address = entry.data[CONF_DEVICE_ADDRESS]
+    address = entry.data[CONF_ADDRESS]
     device_name = entry.data.get(CONF_DEVICE_NAME, DEFAULT_NAME)
     auth_token = entry.data[CONF_AUTH_TOKEN]
 
-    # Create the Bluetooth client
-    client = SpringwellClient(
-        address=device_address,
-        auth_token=auth_token,
+    # Check if device is available
+    ble_device = bluetooth.async_ble_device_from_address(
+        hass, address, connectable=True
     )
 
-    # Create the coordinator
+    if ble_device is None:
+        raise ConfigEntryNotReady(
+            f"Device {address} not found. Is it powered on and in range?"
+        )
+
+    # Create coordinator
     coordinator = SpringwellDataUpdateCoordinator(
         hass=hass,
-        client=client,
+        address=address,
+        auth_token=auth_token,
         device_name=device_name,
     )
 
-    # Try to connect
-    try:
-        if not await coordinator.async_connect():
-            _LOGGER.error("Failed to connect to device during setup")
-            # Don't fail setup - allow offline devices
-            # The coordinator will retry on updates
+    # Do initial data fetch
+    await coordinator.async_config_entry_first_refresh()
 
-        # Do initial refresh
-        await coordinator.async_config_entry_first_refresh()
-    except Exception as e:
-        _LOGGER.warning("Initial connection failed: %s. Will retry.", e)
-
-    # Store coordinator in hass.data
+    # Store coordinator
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
         "coordinator": coordinator,
-        "device_address": device_address,
         "device_name": device_name,
     }
 
-    # Forward the setup to the sensor platform
+    # Forward to platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     _LOGGER.info("Springwell Softener integration setup complete")
@@ -168,11 +164,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry.
-
-    This is called when the user removes the integration or when
-    Home Assistant is shutting down.
-    """
+    """Unload a config entry."""
     _LOGGER.info("Unloading Springwell Softener integration")
 
     # Unload platforms
@@ -180,10 +172,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry, PLATFORMS
     )
 
-    # Disconnect from the device
+    # Disconnect
     if unload_ok:
         data = hass.data[DOMAIN].pop(entry.entry_id)
         coordinator: SpringwellDataUpdateCoordinator = data["coordinator"]
-        await coordinator.async_disconnect()
+        await coordinator.async_shutdown()
 
     return unload_ok

@@ -9,14 +9,15 @@ from enum import Enum
 from typing import Any, Callable
 
 from bleak import BleakClient
-from bleak.exc import BleakError
+from bleak.backends.device import BLEDevice
+from bleak_retry_connector import establish_connection
+
+from .const import (
+    CHAR_UUID_READ,
+    CHAR_UUID_WRITE,
+)
 
 _LOGGER = logging.getLogger(__name__)
-
-# Bluetooth UUIDs from the API guide
-SERVICE_UUID = "a725458c-bee1-4d2e-9555-edf5a8082303"
-READ_CHAR_UUID = "a725458c-bee2-4d2e-9555-edf5a8082303"
-WRITE_CHAR_UUID = "a725458c-bee3-4d2e-9555-edf5a8082303"
 
 # Protocol constants
 AUTH_REQUEST = 0xEA
@@ -46,7 +47,7 @@ class SoftenerData:
     time_hours: int | None = None  # dh
     time_minutes: int | None = None  # dm
     battery_level_mv: int | None = None  # dbl (millivolts)
-    total_gallons_remaining: float | None = None  # dtgr (in hundredths)
+    total_gallons_remaining: float | None = None  # dtgr (hundredths)
     peak_flow_daily: float | None = None  # dpfd (in hundredths)
     water_hardness: int | None = None  # dwh (GPG)
     day_override: int | None = None  # ddo
@@ -138,31 +139,32 @@ class SoftenerData:
         remaining = self.total_gallons_remaining
         capacity = self.total_grains_capacity
         if remaining is not None and capacity:
-            # total_grains_capacity is stored * 1000
             total = capacity * 1000
             if total > 0:
-                # This is an approximation
                 return min(100.0, (remaining / 100.0) / total * 100.0)
         return None
 
 
 class SpringwellClient:
-    """Bluetooth client for Springwell Water Softener."""
+    """Bluetooth client for Springwell Water Softener.
+
+    Uses bleak-retry-connector for reliable BLE connections.
+    """
 
     def __init__(
         self,
-        address: str,
+        ble_device: BLEDevice,
         auth_token: str,
         data_callback: Callable[[SoftenerData], None] | None = None,
     ) -> None:
         """Initialize the client.
 
         Args:
-            address: Bluetooth MAC address of the device
+            ble_device: BLEDevice from Home Assistant's bluetooth
             auth_token: Authentication token (UUID without dashes)
             data_callback: Optional callback when new data is received
         """
-        self._address = address
+        self._ble_device = ble_device
         self._auth_token = bytearray.fromhex(auth_token.replace("-", ""))
         self._data_callback = data_callback
 
@@ -174,6 +176,10 @@ class SpringwellClient:
         self._monitor_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
 
+    def set_ble_device(self, ble_device: BLEDevice) -> None:
+        """Update the BLE device (address may change on different hosts)."""
+        self._ble_device = ble_device
+
     @property
     def state(self) -> ConnectionState:
         """Get the current connection state."""
@@ -182,12 +188,21 @@ class SpringwellClient:
     @property
     def is_connected(self) -> bool:
         """Check if connected and authenticated."""
-        return self._state == ConnectionState.CONNECTED
+        return (
+            self._state == ConnectionState.CONNECTED
+            and self._client is not None
+            and self._client.is_connected
+        )
 
     @property
     def data(self) -> SoftenerData:
         """Get the current softener data."""
         return self._data
+
+    @property
+    def address(self) -> str:
+        """Get the device address."""
+        return self._ble_device.address
 
     def _notification_callback(self, sender: Any, data: bytes) -> None:
         """Handle incoming BLE notifications."""
@@ -199,7 +214,7 @@ class SpringwellClient:
         if self._client and self._client.is_connected:
             _LOGGER.debug("Sending: %s", data.hex())
             await self._client.write_gatt_char(
-                WRITE_CHAR_UUID, data, response=False
+                CHAR_UUID_WRITE, data, response=False
             )
 
     async def _wait_for_response(self, timeout: float = 5.0) -> bytes:
@@ -413,7 +428,10 @@ class SpringwellClient:
 
             except asyncio.TimeoutError:
                 # Connection might be stale, but don't break
-                _LOGGER.debug("Monitor loop timeout - connection may be stale")
+                _LOGGER.debug("Monitor loop timeout - checking connection")
+                if self._client and not self._client.is_connected:
+                    _LOGGER.warning("Connection lost during monitor")
+                    break
                 continue
             except asyncio.CancelledError:
                 _LOGGER.debug("Monitor loop cancelled")
@@ -423,24 +441,38 @@ class SpringwellClient:
                 break
 
         _LOGGER.debug("Monitor loop ended")
+        self._state = ConnectionState.DISCONNECTED
 
     async def connect(self) -> bool:
-        """Connect to the device and authenticate."""
+        """Connect to the device and authenticate.
+
+        Uses bleak-retry-connector for reliable connection establishment.
+        """
         if self._state != ConnectionState.DISCONNECTED:
             _LOGGER.warning("Already connected or connecting")
-            return False
+            return self.is_connected
 
         self._state = ConnectionState.CONNECTING
         self._stop_event.clear()
 
         try:
-            self._client = BleakClient(self._address)
-            await self._client.connect()
-            _LOGGER.info("Connected to %s", self._address)
+            # Use bleak-retry-connector for reliable connection
+            _LOGGER.info(
+                "Connecting to %s (%s)",
+                self._ble_device.name,
+                self._ble_device.address,
+            )
+            self._client = await establish_connection(
+                BleakClient,
+                self._ble_device,
+                self._ble_device.address,
+                max_attempts=3,
+            )
+            _LOGGER.info("BLE connection established")
 
             # Start notifications
             await self._client.start_notify(
-                READ_CHAR_UUID, self._notification_callback
+                CHAR_UUID_READ, self._notification_callback
             )
 
             # Authenticate
@@ -453,12 +485,8 @@ class SpringwellClient:
 
             return True
 
-        except BleakError as e:
-            _LOGGER.error("Failed to connect: %s", e)
-            self._state = ConnectionState.DISCONNECTED
-            return False
         except Exception as e:
-            _LOGGER.exception("Unexpected error during connect: %s", e)
+            _LOGGER.error("Failed to connect: %s", e)
             self._state = ConnectionState.DISCONNECTED
             return False
 
@@ -480,7 +508,7 @@ class SpringwellClient:
         if self._client:
             try:
                 if self._client.is_connected:
-                    await self._client.stop_notify(READ_CHAR_UUID)
+                    await self._client.stop_notify(CHAR_UUID_READ)
                     await self._client.disconnect()
             except Exception as e:
                 _LOGGER.debug("Error during disconnect: %s", e)

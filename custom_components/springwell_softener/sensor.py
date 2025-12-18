@@ -30,8 +30,8 @@ async def async_setup_entry(
 
     data = hass.data[DOMAIN][entry.entry_id]
     coordinator = data["coordinator"]
-    device_address = data["device_address"]
     device_name = data["device_name"]
+    device_address = coordinator.address
 
     # Create one sensor entity for each description
     sensors = [
