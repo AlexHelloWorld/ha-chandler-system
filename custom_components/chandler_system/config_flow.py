@@ -1,4 +1,4 @@
-"""Config flow for Springwell Water Softener integration."""
+"""Config flow for Chandler Water System integration."""
 from __future__ import annotations
 
 import logging
@@ -46,22 +46,21 @@ def validate_auth_token(token: str) -> str | None:
     return None
 
 
-def is_springwell_device(service_info: BluetoothServiceInfoBleak) -> bool:
-    """Check if a discovered device is a Springwell device."""
-    # Check service UUID
+def is_chandler_device(service_info: BluetoothServiceInfoBleak) -> bool:
+    """Check if a discovered device is a Chandler device."""
+    # Check service UUID and check manufacturer ID
     for uuid in service_info.service_uuids:
-        if SERVICE_UUID_ADVERTISED.lower() in uuid.lower():
+        if (
+            SERVICE_UUID_ADVERTISED.lower() in uuid.lower()
+            and MANUFACTURER_ID in service_info.manufacturer_data
+        ):
             return True
-
-    # Check manufacturer ID
-    if MANUFACTURER_ID in service_info.manufacturer_data:
-        return True
 
     return False
 
 
-class SpringwellSoftenerConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Springwell Water Softener.
+class ChandlerSystemConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for Chandler Water System.
 
     Supports both Bluetooth discovery and manual configuration.
     """
@@ -120,7 +119,7 @@ class SpringwellSoftenerConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
 
         # Build the description with device info
-        name = self._discovery_info.name or "Springwell Device"
+        name = self._discovery_info.name or "Chandler Device"
         placeholders = {
             "name": name,
             "address": self._discovery_info.address,
@@ -143,7 +142,7 @@ class SpringwellSoftenerConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Handle user-initiated configuration.
 
-        Scans for Springwell devices and lets user choose one.
+        Scans for Chandler devices and lets user choose one.
         """
         errors: dict[str, str] = {}
 
@@ -165,16 +164,16 @@ class SpringwellSoftenerConfigFlow(ConfigFlow, domain=DOMAIN):
                     user_input={CONF_ADDRESS: address}
                 )
 
-        # Scan for Springwell devices
+        # Scan for Chandler devices
         self._discovered_devices = {}
         for service_info in async_discovered_service_info(self.hass):
-            if is_springwell_device(service_info):
+            if is_chandler_device(service_info):
                 self._discovered_devices[service_info.address] = service_info
 
         if self._discovered_devices:
             # Build selection options
             device_options = {
-                addr: f"{info.name or 'Springwell'} ({addr})"
+                addr: f"{info.name or 'Chandler Device'} ({addr})"
                 for addr, info in self._discovered_devices.items()
             }
 

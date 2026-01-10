@@ -1,4 +1,4 @@
-"""The Springwell Water Softener integration."""
+"""The Chandler Water System integration."""
 from __future__ import annotations
 
 import asyncio
@@ -15,7 +15,7 @@ from homeassistant.helpers.update_coordinator import (
     UpdateFailed,
 )
 
-from .client import SoftenerData, SpringwellClient
+from .client import ChandlerClient, DeviceData
 from .const import (
     CONF_AUTH_TOKEN,
     CONF_DEVICE_NAME,
@@ -30,8 +30,8 @@ PLATFORMS: list[Platform] = [Platform.SENSOR]
 UPDATE_INTERVAL = timedelta(seconds=DEFAULT_SCAN_INTERVAL)
 
 
-class SpringwellDataUpdateCoordinator(DataUpdateCoordinator[SoftenerData]):
-    """Coordinator to manage data updates from the Springwell device.
+class ChandlerDataUpdateCoordinator(DataUpdateCoordinator[DeviceData]):
+    """Coordinator to manage data updates from the Chandler device.
 
     Maintains a persistent Bluetooth connection and receives push updates.
     """
@@ -47,22 +47,22 @@ class SpringwellDataUpdateCoordinator(DataUpdateCoordinator[SoftenerData]):
         super().__init__(
             hass,
             _LOGGER,
-            name=f"Springwell {device_name}",
+            name=f"Chandler {device_name}",
             update_interval=UPDATE_INTERVAL,
         )
         self._address = address
         self._auth_token = auth_token
         self._device_name = device_name
-        self._client: SpringwellClient | None = None
+        self._client: ChandlerClient | None = None
         self._connection_lock = asyncio.Lock()
 
-    def _on_data_received(self, data: SoftenerData) -> None:
+    def _on_data_received(self, data: DeviceData) -> None:
         """Handle new data received from the device."""
         _LOGGER.debug("Received data update from device")
         self.async_set_updated_data(data)
 
     @property
-    def client(self) -> SpringwellClient | None:
+    def client(self) -> ChandlerClient | None:
         """Return the Bluetooth client."""
         return self._client
 
@@ -71,7 +71,7 @@ class SpringwellDataUpdateCoordinator(DataUpdateCoordinator[SoftenerData]):
         """Return the device address."""
         return self._address
 
-    async def _async_update_data(self) -> SoftenerData:
+    async def _async_update_data(self) -> DeviceData:
         """Fetch data from the device.
 
         Called periodically. Ensures connection is active and reconnects
@@ -91,7 +91,7 @@ class SpringwellDataUpdateCoordinator(DataUpdateCoordinator[SoftenerData]):
 
             # Check if we need to create or update client
             if self._client is None:
-                self._client = SpringwellClient(
+                self._client = ChandlerClient(
                     ble_device=ble_device,
                     auth_token=self._auth_token,
                     data_callback=self._on_data_received,
@@ -102,7 +102,7 @@ class SpringwellDataUpdateCoordinator(DataUpdateCoordinator[SoftenerData]):
 
             # Connect if not connected
             if not self._client.is_connected:
-                _LOGGER.info("Connecting to Springwell device...")
+                _LOGGER.info("Connecting to Chandler device...")
                 try:
                     if not await self._client.connect():
                         raise UpdateFailed("Failed to connect to device")
@@ -121,8 +121,8 @@ class SpringwellDataUpdateCoordinator(DataUpdateCoordinator[SoftenerData]):
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Springwell Water Softener from a config entry."""
-    _LOGGER.info("Setting up Springwell Softener integration")
+    """Set up Chandler Water System from a config entry."""
+    _LOGGER.info("Setting up Chandler Water System integration")
 
     address = entry.data[CONF_ADDRESS]
     device_name = entry.data.get(CONF_DEVICE_NAME, DEFAULT_NAME)
@@ -139,7 +139,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     # Create coordinator
-    coordinator = SpringwellDataUpdateCoordinator(
+    coordinator = ChandlerDataUpdateCoordinator(
         hass=hass,
         address=address,
         auth_token=auth_token,
@@ -159,13 +159,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Forward to platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    _LOGGER.info("Springwell Softener integration setup complete")
+    _LOGGER.info("Chandler Water System integration setup complete")
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    _LOGGER.info("Unloading Springwell Softener integration")
+    _LOGGER.info("Unloading Chandler Water System integration")
 
     # Unload platforms
     unload_ok = await hass.config_entries.async_unload_platforms(
@@ -175,7 +175,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Disconnect
     if unload_ok:
         data = hass.data[DOMAIN].pop(entry.entry_id)
-        coordinator: SpringwellDataUpdateCoordinator = data["coordinator"]
+        coordinator: ChandlerDataUpdateCoordinator = data["coordinator"]
         await coordinator.async_shutdown()
 
     return unload_ok
+

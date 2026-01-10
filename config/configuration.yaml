@@ -16,5 +16,5 @@ config:
 logger:
   default: info
   logs:
-    custom_components.springwell_softener: debug
+    custom_components.chandler_system: debug
 

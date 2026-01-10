@@ -1,0 +1,19 @@
+{
+  "domain": "chandler_system",
+  "name": "Chandler Water System",
+  "codeowners": ["@AlexHelloWorld"],
+  "config_flow": true,
+  "dependencies": ["bluetooth_adapters"],
+  "documentation": "https://github.com/AlexHelloWorld/ha-chandler-system",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/AlexHelloWorld/ha-chandler-system/issues",
+  "requirements": ["bleak>=0.21.0", "bleak-retry-connector>=3.4.0"],
+  "version": "0.1.0",
+  "bluetooth": [
+    {
+      "service_uuid": "8d53dc1d-1db7-4cd3-868b-8a527460aa84",
+      "manufacturer_id": 1850
+    }
+  ]
+}
+

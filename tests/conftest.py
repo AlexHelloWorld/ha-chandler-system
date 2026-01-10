@@ -1,4 +1,4 @@
-"""Fixtures for Springwell Water Softener tests."""
+"""Fixtures for Chandler Water System tests."""
 import pytest
 
 from homeassistant.core import HomeAssistant
@@ -8,4 +8,3 @@ from homeassistant.core import HomeAssistant
 def auto_enable_custom_integrations(enable_custom_integrations):
     """Enable custom integrations for all tests."""
     yield
-

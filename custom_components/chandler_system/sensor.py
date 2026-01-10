@@ -1,4 +1,4 @@
-"""Sensor platform for Springwell Water Softener integration."""
+"""Sensor platform for Chandler Water System integration."""
 from __future__ import annotations
 
 import logging
@@ -14,7 +14,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import (
     DOMAIN,
     SENSOR_DESCRIPTIONS,
-    SpringwellSensorEntityDescription,
+    ChandlerSensorEntityDescription,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -25,8 +25,8 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Springwell Softener sensors from a config entry."""
-    _LOGGER.info("Setting up Springwell Softener sensors")
+    """Set up Chandler Water System sensors from a config entry."""
+    _LOGGER.info("Setting up Chandler Water System sensors")
 
     data = hass.data[DOMAIN][entry.entry_id]
     coordinator = data["coordinator"]
@@ -35,7 +35,7 @@ async def async_setup_entry(
 
     # Create one sensor entity for each description
     sensors = [
-        SpringwellSensor(
+        ChandlerSensor(
             coordinator=coordinator,
             description=description,
             device_address=device_address,
@@ -47,20 +47,20 @@ async def async_setup_entry(
     async_add_entities(sensors)
 
 
-class SpringwellSensor(CoordinatorEntity, SensorEntity):
-    """Sensor for Springwell Water Softener.
+class ChandlerSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for Chandler Water System devices.
 
     This sensor uses the CoordinatorEntity pattern to efficiently
     share data updates across all sensors from a single device.
     """
 
     _attr_has_entity_name = True
-    entity_description: SpringwellSensorEntityDescription
+    entity_description: ChandlerSensorEntityDescription
 
     def __init__(
         self,
         coordinator: Any,
-        description: SpringwellSensorEntityDescription,
+        description: ChandlerSensorEntityDescription,
         device_address: str,
         device_name: str,
     ) -> None:
@@ -69,7 +69,7 @@ class SpringwellSensor(CoordinatorEntity, SensorEntity):
         Args:
             coordinator: The data update coordinator
             description: Defines this sensor's name, unit, icon, etc.
-            device_address: Bluetooth MAC address of the softener
+            device_address: Bluetooth MAC address of the device
             device_name: User-friendly name for the device
         """
         super().__init__(coordinator)
@@ -87,8 +87,8 @@ class SpringwellSensor(CoordinatorEntity, SensorEntity):
         return DeviceInfo(
             identifiers={(DOMAIN, self._device_address)},
             name=self._device_name,
-            manufacturer="Springwell",
-            model="Water Softener",
+            manufacturer="Chandler Systems",
+            model="Water System",
             sw_version="0.1.0",
         )
 
@@ -125,3 +125,4 @@ class SpringwellSensor(CoordinatorEntity, SensorEntity):
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         self.async_write_ha_state()
+

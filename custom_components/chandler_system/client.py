@@ -1,4 +1,4 @@
-"""Bluetooth client for Springwell Water Softener."""
+"""Bluetooth client for Chandler Water System devices."""
 from __future__ import annotations
 
 import asyncio
@@ -40,8 +40,8 @@ class ConnectionState(Enum):
 
 
 @dataclass
-class SoftenerData:
-    """Data class to hold all parsed softener data."""
+class DeviceData:
+    """Data class to hold all parsed device data."""
 
     # Dashboard data
     time_hours: int | None = None  # dh
@@ -145,8 +145,8 @@ class SoftenerData:
         return None
 
 
-class SpringwellClient:
-    """Bluetooth client for Springwell Water Softener.
+class ChandlerClient:
+    """Bluetooth client for Chandler Water System devices.
 
     Uses bleak-retry-connector for reliable BLE connections.
     """
@@ -155,7 +155,7 @@ class SpringwellClient:
         self,
         ble_device: BLEDevice,
         auth_token: str,
-        data_callback: Callable[[SoftenerData], None] | None = None,
+        data_callback: Callable[[DeviceData], None] | None = None,
     ) -> None:
         """Initialize the client.
 
@@ -172,7 +172,7 @@ class SpringwellClient:
         self._state = ConnectionState.DISCONNECTED
         self._notification_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._data_buffer = bytearray()
-        self._data = SoftenerData()
+        self._data = DeviceData()
         self._monitor_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
 
@@ -195,8 +195,8 @@ class SpringwellClient:
         )
 
     @property
-    def data(self) -> SoftenerData:
-        """Get the current softener data."""
+    def data(self) -> DeviceData:
+        """Get the current device data."""
         return self._data
 
     @property
@@ -295,7 +295,7 @@ class SpringwellClient:
             _LOGGER.warning("Failed to parse JSON: %s", e)
 
     def _map_json_to_data(self, json_data: dict[str, Any]) -> None:
-        """Map JSON keys to SoftenerData fields."""
+        """Map JSON keys to DeviceData fields."""
         # Dashboard
         if "dh" in json_data:
             self._data.time_hours = json_data["dh"]
@@ -518,7 +518,7 @@ class SpringwellClient:
         self._state = ConnectionState.DISCONNECTED
         _LOGGER.info("Disconnected")
 
-    async def __aenter__(self) -> "SpringwellClient":
+    async def __aenter__(self) -> "ChandlerClient":
         """Async context manager entry."""
         await self.connect()
         return self
@@ -528,3 +528,4 @@ class SpringwellClient:
     ) -> None:
         """Async context manager exit."""
         await self.disconnect()
+

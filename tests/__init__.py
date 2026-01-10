@@ -1,2 +1,1 @@
-"""Tests for Springwell Water Softener integration."""
-
+"""Tests for Chandler Water System integration."""

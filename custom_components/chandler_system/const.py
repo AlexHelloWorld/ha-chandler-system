@@ -1,4 +1,4 @@
-"""Constants for the Springwell Water Softener integration."""
+"""Constants for the Chandler Water System integration."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -15,7 +15,7 @@ from homeassistant.const import (
     UnitOfVolume,
 )
 
-DOMAIN = "springwell_softener"
+DOMAIN = "chandler_system"
 
 # Bluetooth UUIDs
 # Advertised service UUID (for discovery)
@@ -35,20 +35,20 @@ CONF_AUTH_TOKEN = "auth_token"
 CONF_DISCOVERED_DEVICE = "discovered_device"
 
 # Default values
-DEFAULT_NAME = "Springwell Softener"
+DEFAULT_NAME = "Chandler Water System"
 DEFAULT_SCAN_INTERVAL = 60  # seconds
 CONNECTION_TIMEOUT = 30.0  # seconds
 
 
 @dataclass(frozen=True, kw_only=True)
-class SpringwellSensorEntityDescription(SensorEntityDescription):
-    """Describes a Springwell sensor entity.
+class ChandlerSensorEntityDescription(SensorEntityDescription):
+    """Describes a Chandler sensor entity.
 
     Extends the base SensorEntityDescription to add custom fields
     for value extraction and transformation.
     """
 
-    # Function to extract value from SoftenerData
+    # Function to extract value from DeviceData
     value_fn: Callable[[Any], Any] | None = None
     # Whether the raw value needs to be divided (for hundredths values)
     divisor: float | None = None
@@ -113,9 +113,9 @@ def _thousands(value: int | None) -> int | None:
 
 
 # Define all sensors based on the API guide
-SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
+SENSOR_DESCRIPTIONS: tuple[ChandlerSensorEntityDescription, ...] = (
     # Water usage sensors
-    SpringwellSensorEntityDescription(
+    ChandlerSensorEntityDescription(
         key=SENSOR_WATER_USED_TODAY,
         translation_key=SENSOR_WATER_USED_TODAY,
         name="Water Used Today",
@@ -124,7 +124,7 @@ SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
         icon="mdi:water",
         value_fn=lambda d: _hundredths(d.water_used_today),
     ),
-    SpringwellSensorEntityDescription(
+    ChandlerSensorEntityDescription(
         key=SENSOR_AVERAGE_WATER_USED,
         translation_key=SENSOR_AVERAGE_WATER_USED,
         name="Average Daily Water Usage",
@@ -133,7 +133,7 @@ SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
         icon="mdi:water-outline",
         value_fn=lambda d: _hundredths(d.average_water_used),
     ),
-    SpringwellSensorEntityDescription(
+    ChandlerSensorEntityDescription(
         key=SENSOR_TOTAL_GALLONS_REMAINING,
         translation_key=SENSOR_TOTAL_GALLONS_REMAINING,
         name="Treated Water Remaining",
@@ -142,7 +142,7 @@ SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
         icon="mdi:water-check",
         value_fn=lambda d: _hundredths(d.total_gallons_remaining),
     ),
-    SpringwellSensorEntityDescription(
+    ChandlerSensorEntityDescription(
         key=SENSOR_TOTAL_GALLONS,
         translation_key=SENSOR_TOTAL_GALLONS,
         name="Total Gallons Processed",
@@ -151,7 +151,7 @@ SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
         icon="mdi:counter",
         value_fn=lambda d: _hundredths(d.total_gallons),
     ),
-    SpringwellSensorEntityDescription(
+    ChandlerSensorEntityDescription(
         key=SENSOR_GALLONS_SINCE_LAST_REGEN,
         translation_key=SENSOR_GALLONS_SINCE_LAST_REGEN,
         name="Gallons Since Last Regeneration",
@@ -162,7 +162,7 @@ SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
     ),
 
     # Flow sensors
-    SpringwellSensorEntityDescription(
+    ChandlerSensorEntityDescription(
         key=SENSOR_PRESENT_FLOW,
         translation_key=SENSOR_PRESENT_FLOW,
         name="Current Flow Rate",
@@ -171,7 +171,7 @@ SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
         icon="mdi:water-pump",
         value_fn=lambda d: _hundredths_or_zero(d.present_flow),
     ),
-    SpringwellSensorEntityDescription(
+    ChandlerSensorEntityDescription(
         key=SENSOR_PEAK_FLOW_DAILY,
         translation_key=SENSOR_PEAK_FLOW_DAILY,
         name="Peak Flow Today",
@@ -182,7 +182,7 @@ SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
     ),
 
     # Regeneration sensors
-    SpringwellSensorEntityDescription(
+    ChandlerSensorEntityDescription(
         key=SENSOR_DAYS_UNTIL_REGEN,
         translation_key=SENSOR_DAYS_UNTIL_REGEN,
         name="Days Until Regeneration",
@@ -191,7 +191,7 @@ SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
         icon="mdi:calendar-clock",
         value_fn=lambda d: d.days_until_regen,
     ),
-    SpringwellSensorEntityDescription(
+    ChandlerSensorEntityDescription(
         key=SENSOR_DAYS_SINCE_LAST_REGEN,
         translation_key=SENSOR_DAYS_SINCE_LAST_REGEN,
         name="Days Since Last Regeneration",
@@ -200,7 +200,7 @@ SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
         icon="mdi:calendar-check",
         value_fn=lambda d: d.days_since_last_regen,
     ),
-    SpringwellSensorEntityDescription(
+    ChandlerSensorEntityDescription(
         key=SENSOR_REGEN_COUNTER,
         translation_key=SENSOR_REGEN_COUNTER,
         name="Total Regeneration Cycles",
@@ -208,7 +208,7 @@ SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
         icon="mdi:refresh",
         value_fn=lambda d: d.regen_counter,
     ),
-    SpringwellSensorEntityDescription(
+    ChandlerSensorEntityDescription(
         key=SENSOR_REGEN_ACTIVE,
         translation_key=SENSOR_REGEN_ACTIVE,
         name="Regeneration Active",
@@ -217,7 +217,7 @@ SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
     ),
 
     # Salt sensors
-    SpringwellSensorEntityDescription(
+    ChandlerSensorEntityDescription(
         key=SENSOR_SALT_LEVEL,
         translation_key=SENSOR_SALT_LEVEL,
         name="Salt Level",
@@ -226,7 +226,7 @@ SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
         icon="mdi:shaker-outline",
         value_fn=lambda d: d.salt_level_percent,
     ),
-    SpringwellSensorEntityDescription(
+    ChandlerSensorEntityDescription(
         key=SENSOR_SALT_REMAINING,
         translation_key=SENSOR_SALT_REMAINING,
         name="Salt Remaining",
@@ -235,7 +235,7 @@ SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
         icon="mdi:shaker",
         value_fn=lambda d: d.remaining_salt_pounds,
     ),
-    SpringwellSensorEntityDescription(
+    ChandlerSensorEntityDescription(
         key=SENSOR_SALT_LOW,
         translation_key=SENSOR_SALT_LOW,
         name="Salt Low Alert",
@@ -244,7 +244,7 @@ SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
     ),
 
     # System sensors
-    SpringwellSensorEntityDescription(
+    ChandlerSensorEntityDescription(
         key=SENSOR_WATER_HARDNESS,
         translation_key=SENSOR_WATER_HARDNESS,
         name="Water Hardness",
@@ -253,7 +253,7 @@ SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
         icon="mdi:water-opacity",
         value_fn=lambda d: d.water_hardness,
     ),
-    SpringwellSensorEntityDescription(
+    ChandlerSensorEntityDescription(
         key=SENSOR_BATTERY_LEVEL,
         translation_key=SENSOR_BATTERY_LEVEL,
         name="Battery Voltage",
@@ -263,7 +263,7 @@ SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
         icon="mdi:battery",
         value_fn=lambda d: d.battery_level_volts,
     ),
-    SpringwellSensorEntityDescription(
+    ChandlerSensorEntityDescription(
         key=SENSOR_DAYS_IN_OPERATION,
         translation_key=SENSOR_DAYS_IN_OPERATION,
         name="Days In Operation",
@@ -272,7 +272,7 @@ SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
         icon="mdi:calendar-range",
         value_fn=lambda d: d.days_in_operation,
     ),
-    SpringwellSensorEntityDescription(
+    ChandlerSensorEntityDescription(
         key=SENSOR_VALVE_ERROR,
         translation_key=SENSOR_VALVE_ERROR,
         name="Valve Error",
@@ -281,7 +281,7 @@ SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
     ),
 
     # Capacity sensors
-    SpringwellSensorEntityDescription(
+    ChandlerSensorEntityDescription(
         key=SENSOR_RESERVE_CAPACITY_GALLONS,
         translation_key=SENSOR_RESERVE_CAPACITY_GALLONS,
         name="Reserve Capacity",
@@ -290,7 +290,7 @@ SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
         icon="mdi:storage-tank",
         value_fn=lambda d: _hundredths(d.reserve_capacity_gallons),
     ),
-    SpringwellSensorEntityDescription(
+    ChandlerSensorEntityDescription(
         key=SENSOR_TOTAL_GRAINS_CAPACITY,
         translation_key=SENSOR_TOTAL_GRAINS_CAPACITY,
         name="Total Grains Capacity",
@@ -301,3 +301,4 @@ SENSOR_DESCRIPTIONS: tuple[SpringwellSensorEntityDescription, ...] = (
         value_fn=lambda d: _thousands(d.total_grains_capacity),
     ),
 )
+
