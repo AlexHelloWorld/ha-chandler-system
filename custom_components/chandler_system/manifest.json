@@ -5,8 +5,10 @@
   "config_flow": true,
   "dependencies": ["bluetooth_adapters"],
   "documentation": "https://github.com/AlexHelloWorld/ha-chandler-system",
+  "integration_type": "device",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/AlexHelloWorld/ha-chandler-system/issues",
+  "loggers": ["custom_components.chandler_system"],
   "requirements": ["bleak>=0.21.0", "bleak-retry-connector>=3.4.0"],
   "version": "0.1.0",
   "bluetooth": [

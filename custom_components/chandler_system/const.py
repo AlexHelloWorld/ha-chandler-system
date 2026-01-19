@@ -229,6 +229,7 @@ SENSOR_DESCRIPTIONS: tuple[ChandlerSensorEntityDescription, ...] = (
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:shaker-outline",
+        suggested_display_precision=2,
         value_fn=lambda d: d.salt_level_percent,
     ),
     ChandlerSensorEntityDescription(
