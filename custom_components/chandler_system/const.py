@@ -97,19 +97,24 @@ def _get_error_text(error_code: int | None) -> str:
 
 
 # Value extraction helper functions
-def _hundredths(value: float | None) -> float | None:
-    """Convert hundredths value to actual."""
-    return value / 100.0 if value else None
+def _hundredths(value: int | None) -> float | None:
+    """Convert 1/100 value to actual (e.g., 1/100 gallons → gallons)."""
+    return value / 100.0 if value is not None else None
 
 
-def _hundredths_or_zero(value: float | None) -> float:
-    """Convert hundredths value to actual, defaulting to 0."""
-    return value / 100.0 if value else 0
+def _hundredths_or_zero(value: int | None) -> float:
+    """Convert 1/100 value to actual, defaulting to 0."""
+    return value / 100.0 if value else 0.0
+
+
+def _tenths(value: int | None) -> float | None:
+    """Convert 1/10 value to actual (e.g., 1/10 pounds → pounds)."""
+    return value / 10.0 if value is not None else None
 
 
 def _thousands(value: int | None) -> int | None:
-    """Multiply by 1000."""
-    return value * 1000 if value else None
+    """Multiply by 1000 (e.g., 1000 GPG → grains)."""
+    return value * 1000 if value is not None else None
 
 
 # Define all sensors based on the API guide
@@ -233,7 +238,7 @@ SENSOR_DESCRIPTIONS: tuple[ChandlerSensorEntityDescription, ...] = (
         native_unit_of_measurement="lb",
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:shaker",
-        value_fn=lambda d: d.remaining_salt_pounds,
+        value_fn=lambda d: _tenths(d.brine_tank_remaining_salt),
     ),
     ChandlerSensorEntityDescription(
         key=SENSOR_SALT_LOW,
@@ -301,4 +306,3 @@ SENSOR_DESCRIPTIONS: tuple[ChandlerSensorEntityDescription, ...] = (
         value_fn=lambda d: _thousands(d.total_grains_capacity),
     ),
 )
-

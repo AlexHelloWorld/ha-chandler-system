@@ -43,41 +43,42 @@ class ConnectionState(Enum):
 class DeviceData:
     """Data class to hold all parsed device data."""
 
-    # Dashboard data
-    time_hours: int | None = None  # dh
-    time_minutes: int | None = None  # dm
-    battery_level_mv: int | None = None  # dbl (millivolts)
-    total_gallons_remaining: float | None = None  # dtgr (hundredths)
-    peak_flow_daily: float | None = None  # dpfd (in hundredths)
-    water_hardness: int | None = None  # dwh (GPG)
-    day_override: int | None = None  # ddo
-    current_day_override: int | None = None  # dcdo
-    water_used_today: float | None = None  # dwu (in hundredths)
-    average_water_used: float | None = None  # dwau (in hundredths)
-    regen_time_hours: int | None = None  # drth
-    regen_time_type: int | None = None  # drtt
+    # Dashboard data (all integers per API spec)
+    time_hours: int | None = None  # dh (0-23, military time)
+    time_minutes: int | None = None  # dm (0-59)
+    time_seconds: int | None = None  # ds (0-59)
+    battery_level_mv: int | None = None  # dbl (mV, 0-9700)
+    total_gallons_remaining: int | None = None  # dtgr (1/100 gallons)
+    peak_flow_daily: int | None = None  # dpfd (1/100 GPM)
+    water_hardness: int | None = None  # dwh (GPG, 0-99)
+    day_override: int | None = None  # ddo (days, 0-29)
+    current_day_override: int | None = None  # dcdo (days, 0-29)
+    water_used_today: int | None = None  # dwu (1/100 gallons)
+    average_water_used: int | None = None  # dwau (1/100 gallons)
+    regen_time_hours: int | None = None  # drth (0-23, military time)
+    regen_time_type: int | None = None  # drtt (0-2)
     regen_time_remaining: int | None = None  # drtr
     regen_current_position: int | None = None  # drcp
-    regen_in_aeration: bool | None = None  # dria
-    regen_soak_mode: bool | None = None  # dps
-    regen_soak_timer: int | None = None  # drst
-    prefill_enabled: bool | None = None  # dpe
-    prefill_duration: int | None = None  # dpd
+    regen_in_aeration: bool | None = None  # dria (0-1)
+    regen_soak_mode: bool | None = None  # dps (0-1)
+    regen_soak_timer: int | None = None  # drst (minutes)
+    prefill_enabled: bool | None = None  # dpe (0-1)
+    prefill_duration: int | None = None  # dpd (hours, 1-4)
 
     # Brine tank
     brine_tank_total_salt: int | None = None  # dbts (pounds)
-    brine_tank_remaining_salt: int | None = None  # dbtr (in tenths)
-    brine_tank_width: int | None = None  # dbtw
-    brine_tank_height: int | None = None  # dbth
-    brine_tank_reserve_time: int | None = None  # dbrt
+    brine_tank_remaining_salt: int | None = None  # dbtr (1/10 pounds)
+    brine_tank_width: int | None = None  # dbtw (inches)
+    brine_tank_height: int | None = None  # dbth (inches)
+    brine_tank_reserve_time: int | None = None  # dbrt (minutes)
 
     # Advanced settings
     days_until_regen: int | None = None  # asd
     regen_day_override: int | None = None  # asr
     auto_reserve_mode: bool | None = None  # asar
     reserve_capacity: int | None = None  # asrc
-    reserve_capacity_gallons: float | None = None  # asrg (hundredths)
-    total_grains_capacity: int | None = None  # astg (multiply by 1000)
+    reserve_capacity_gallons: int | None = None  # asrg (1/100 gallons)
+    total_grains_capacity: int | None = None  # astg (1000 GPG)
     aeration_days: int | None = None  # asad
     chlorine_pulses: int | None = None  # ascp
     display_off: bool | None = None  # asdo
@@ -86,16 +87,16 @@ class DeviceData:
     # Status & History
     days_in_operation: int | None = None  # shdo
     days_since_last_regen: int | None = None  # shdr
-    gallons_since_last_regen: float | None = None  # shgs (hundredths)
+    gallons_since_last_regen: int | None = None  # shgs
     regen_counter: int | None = None  # shrc
     regen_counter_resettable: int | None = None  # shrr
-    total_gallons: float | None = None  # shgt (in hundredths)
-    total_gallons_resettable: float | None = None  # shgr (hundredths)
+    total_gallons: int | None = None  # shgt
+    total_gallons_resettable: int | None = None  # shgr
 
     # Global
     valve_status: int | None = None  # gvs
     valve_error: int | None = None  # gve
-    present_flow: float | None = None  # gpf (in hundredths)
+    present_flow: int | None = None  # gpf
     regen_active: bool | None = None  # gra
     regen_state: int | None = None  # grs
     auth_state: int | None = None  # as (2 = authenticated)
@@ -118,30 +119,16 @@ class DeviceData:
         return None
 
     @property
-    def remaining_salt_pounds(self) -> int | None:
-        """Get remaining salt in pounds (rounded)."""
-        if self.brine_tank_remaining_salt is not None:
-            return round(self.brine_tank_remaining_salt / 10.0)
-        return None
-
-    @property
     def salt_level_percent(self) -> float | None:
-        """Calculate salt level percentage."""
+        """Calculate salt level percentage.
+
+        Note: remaining is in 1/10 pounds, total is in pounds.
+        """
         remaining = self.brine_tank_remaining_salt
         total = self.brine_tank_total_salt
         if remaining is not None and total:
+            # remaining / 10 converts to pounds, then calculate percentage
             return min(100.0, (remaining / 10.0 / total) * 100.0)
-        return None
-
-    @property
-    def capacity_remaining_percent(self) -> float | None:
-        """Calculate capacity remaining percentage."""
-        remaining = self.total_gallons_remaining
-        capacity = self.total_grains_capacity
-        if remaining is not None and capacity:
-            total = capacity * 1000
-            if total > 0:
-                return min(100.0, (remaining / 100.0) / total * 100.0)
         return None
 
 
@@ -241,10 +228,8 @@ class ChandlerClient:
                     _LOGGER.info("Authentication successful")
                     return True
                 else:
-                    # Initial data packet - send ACK
+                    # Unused data, ignore and send ACK
                     await self._send_packet(bytes([ACK]))
-                    # Process the data
-                    self._process_packet(data)
             except asyncio.TimeoutError:
                 _LOGGER.error("Authentication timeout")
                 return False
@@ -301,6 +286,8 @@ class ChandlerClient:
             self._data.time_hours = json_data["dh"]
         if "dm" in json_data:
             self._data.time_minutes = json_data["dm"]
+        if "ds" in json_data:
+            self._data.time_seconds = json_data["ds"]
         if "dbl" in json_data:
             self._data.battery_level_mv = json_data["dbl"]
         if "dtgr" in json_data:
@@ -410,21 +397,16 @@ class ChandlerClient:
                     timeout=30.0,
                 )
 
-                # Handle keep-alive
-                if len(data) == 1:
-                    if data[0] == KEEP_ALIVE_MARCO:
-                        await self._send_packet(bytes([KEEP_ALIVE_POLO]))
-                    continue
-
-                # Handle ACK
-                if len(data) == 1 and data[0] == ACK:
-                    continue
-
-                # Send ACK for data packets
-                await self._send_packet(bytes([ACK]))
-
-                # Process the packet
-                self._process_packet(data)
+                if len(data) == 1 and data[0] == KEEP_ALIVE_MARCO:
+                    # Keep-alive: respond with polo
+                    await self._send_packet(bytes([KEEP_ALIVE_POLO]))
+                elif len(data) == 1 and data[0] == ACK:
+                    # ACK: nothing to do
+                    pass
+                else:
+                    # Data packet: send ACK and process
+                    await self._send_packet(bytes([ACK]))
+                    self._process_packet(data)
 
             except asyncio.TimeoutError:
                 # Connection might be stale, but don't break
@@ -504,6 +486,16 @@ class ChandlerClient:
                 pass
             self._monitor_task = None
 
+        # Drain remaining packets from queue
+        while not self._notification_queue.empty():
+            data = self._notification_queue.get_nowait()
+            if len(data) == 1 and data[0] == KEEP_ALIVE_MARCO:
+                await self._send_packet(bytes([KEEP_ALIVE_POLO]))
+            elif len(data) == 1 and data[0] == ACK:
+                pass
+            else:
+                self._process_packet(data)
+
         # Disconnect BLE client
         if self._client:
             try:
@@ -517,15 +509,3 @@ class ChandlerClient:
 
         self._state = ConnectionState.DISCONNECTED
         _LOGGER.info("Disconnected")
-
-    async def __aenter__(self) -> "ChandlerClient":
-        """Async context manager entry."""
-        await self.connect()
-        return self
-
-    async def __aexit__(
-        self, exc_type: Any, exc_val: Any, exc_tb: Any
-    ) -> None:
-        """Async context manager exit."""
-        await self.disconnect()
-
