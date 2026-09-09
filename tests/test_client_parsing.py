@@ -24,8 +24,48 @@ def test_regen_state_text(client):
 
 
 def test_regen_state_text_unknown_code(client):
+    """An undocumented code must not become a state outside the enum options.
+
+    Home Assistant raises ValueError if an enum sensor reports a value that is
+    not in its declared options, which would abort the coordinator's update of
+    every entity after this one.
+    """
+    from custom_components.chandler_system.const import SENSOR_DESCRIPTIONS
+
     client._map_json_to_data({"grs": 99})
-    assert client.data.regen_state_text == "Unknown (99)"
+    assert client.data.regen_state_text is None
+
+    description = next(
+        d for d in SENSOR_DESCRIPTIONS if d.key == "regen_state"
+    )
+    value = description.value_fn(client.data)
+    assert value is None or value in description.options
+
+
+def test_regen_state_raw_code_kept_as_attribute(client):
+    """The undecoded code stays reachable for diagnosing a firmware change."""
+    from custom_components.chandler_system.const import SENSOR_DESCRIPTIONS
+
+    client._map_json_to_data({"grs": 99})
+    description = next(
+        d for d in SENSOR_DESCRIPTIONS if d.key == "regen_state"
+    )
+
+    assert description.attributes_fn(client.data) == {"raw_state": 99}
+
+
+def test_every_documented_regen_state_is_a_valid_enum_option(client):
+    from custom_components.chandler_system.const import (
+        REGEN_STATE_MAP,
+        SENSOR_DESCRIPTIONS,
+    )
+
+    description = next(
+        d for d in SENSOR_DESCRIPTIONS if d.key == "regen_state"
+    )
+    for code in REGEN_STATE_MAP:
+        client._map_json_to_data({"grs": code})
+        assert description.value_fn(client.data) in description.options
 
 
 def test_regen_state_text_absent(client):

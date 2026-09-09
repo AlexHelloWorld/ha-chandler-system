@@ -349,6 +349,7 @@ SENSOR_DESCRIPTIONS: tuple[ChandlerSensorEntityDescription, ...] = (
         options=list(REGEN_STATE_MAP.values()),
         icon="mdi:state-machine",
         value_fn=lambda d: d.regen_state_text,
+        attributes_fn=lambda d: {"raw_state": d.regen_state},
     ),
     ChandlerSensorEntityDescription(
         key=SENSOR_REGEN_POSITION,

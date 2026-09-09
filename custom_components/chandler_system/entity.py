@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from homeassistant.helpers.entity import DeviceInfo, EntityDescription
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity import EntityDescription
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
@@ -12,7 +14,7 @@ if TYPE_CHECKING:
     from . import ChandlerDataUpdateCoordinator
 
 
-class ChandlerEntity(CoordinatorEntity):
+class ChandlerEntity(CoordinatorEntity["ChandlerDataUpdateCoordinator"]):
     """Common device grouping and availability for Chandler entities."""
 
     _attr_has_entity_name = True
@@ -28,24 +30,14 @@ class ChandlerEntity(CoordinatorEntity):
         super().__init__(coordinator)
 
         self.entity_description = description
-        self._device_address = device_address
-        self._device_name = device_name
         self._attr_unique_id = f"{device_address}_{description.key}"
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return device info to group all entities under one device."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._device_address)},
-            name=self._device_name,
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, device_address)},
+            connections={(dr.CONNECTION_BLUETOOTH, device_address)},
+            name=device_name,
             manufacturer="Chandler Systems",
             model="Water System",
         )
-
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        return super().available and self.coordinator.data is not None
 
     def _value(self, value_fn: Any) -> Any:
         """Run a description's value_fn against the current data."""

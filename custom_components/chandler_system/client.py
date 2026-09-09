@@ -27,12 +27,22 @@ _LOGGER = logging.getLogger(__name__)
 
 # How long to wait for the device to ACK a write before giving up.
 WRITE_ACK_TIMEOUT = 5.0
+# Overall budget for the handshake, which spans several device round trips.
+AUTH_TIMEOUT = 30.0
 # The device needs a moment to close the link after a reset command.
 DEVICE_RESET_DELAY = 0.15
+
+# Authentication states reported by the device in the "as" key.
+AUTH_STATE_NOT_AUTHENTICATED = 1
+AUTH_STATE_AUTHENTICATED = 2
 
 
 class ChandlerWriteError(Exception):
     """Raised when a write to the device could not be delivered."""
+
+
+class ChandlerAuthError(Exception):
+    """Raised when the device rejects the authentication token."""
 
 
 class ConnectionState(Enum):
@@ -171,12 +181,15 @@ class DeviceData:
 
     @property
     def regen_state_text(self) -> str | None:
-        """Human-readable regeneration state."""
+        """Human-readable regeneration state.
+
+        Returns None for a code outside the documented range rather than a
+        placeholder string: the sensor declares these values as its enum
+        options, and Home Assistant rejects a state that is not among them.
+        """
         if self.regen_state is None:
             return None
-        return REGEN_STATE_MAP.get(
-            self.regen_state, f"Unknown ({self.regen_state})"
-        )
+        return REGEN_STATE_MAP.get(self.regen_state)
 
     @property
     def regen_step_remaining_seconds(self) -> int | None:
@@ -270,6 +283,7 @@ class ChandlerClient:
         self._stop_event = asyncio.Event()
         self._write_lock = asyncio.Lock()
         self._ack_waiter: asyncio.Future[StatusPacket] | None = None
+        self._unmatched_acks = 0
 
     def set_ble_device(self, ble_device: BLEDevice) -> None:
         """Update the BLE device (address may change on different hosts)."""
@@ -319,30 +333,60 @@ class ChandlerClient:
         )
 
     async def _authenticate(self) -> bool:
-        """Authenticate with the device."""
-        self._state = ConnectionState.AUTHENTICATING
+        """Authenticate with the device.
 
-        # Send ID status packet
+        Sends the ID packet, then the token once the device acknowledges it,
+        then waits for the device to report itself authenticated. The device
+        answers a rejected token with an unauthenticated state and otherwise
+        just keeps the link alive, so only the reported state distinguishes
+        success from failure.
+        """
+        self._state = ConnectionState.AUTHENTICATING
+        self._data.auth_state = None
+
         await self._send_packet(
             protocol.build_status_packet(protocol.PACKET_AUTH_REQUEST)
         )
 
-        # Wait for ACK and initial data
+        token_sent = False
+        deadline = asyncio.get_running_loop().time() + AUTH_TIMEOUT
+
         while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                _LOGGER.error(
+                    "Authentication timed out after %ss (state: %s)",
+                    AUTH_TIMEOUT,
+                    self._data.auth_state,
+                )
+                return False
+
             try:
-                data = await self._wait_for_response(timeout=10.0)
-                if protocol.classify_status(data) is StatusPacket.ACK:
-                    # Send auth token
-                    await self._send_packet(self._auth_token)
-                    self._state = ConnectionState.CONNECTED
-                    _LOGGER.info("Authentication successful")
-                    return True
-                # Before authenticating the device still sends initial data
-                # and keep-alives; both need the normal responses or it
-                # drops the link.
-                await self._handle_incoming(data)
+                data = await self._wait_for_response(timeout=remaining)
             except asyncio.TimeoutError:
                 _LOGGER.error("Authentication timeout")
+                return False
+
+            if not token_sent and protocol.classify_status(data) is StatusPacket.ACK:
+                await self._send_packet(self._auth_token)
+                token_sent = True
+                continue
+
+            # Before authenticating the device still sends initial data
+            # and keep-alives; both need the normal responses or it
+            # drops the link.
+            await self._handle_incoming(data)
+
+            if self._data.auth_state == AUTH_STATE_AUTHENTICATED:
+                self._state = ConnectionState.CONNECTED
+                _LOGGER.info("Authentication successful")
+                return True
+
+            if token_sent and self._data.auth_state == AUTH_STATE_NOT_AUTHENTICATED:
+                _LOGGER.error(
+                    "Device rejected the authentication token. Generate a new "
+                    "one in the Chandler/Springwell app and reconfigure."
+                )
                 return False
 
     async def _process_packet(self, data: bytes) -> None:
@@ -529,7 +573,17 @@ class ChandlerClient:
             await self._process_packet(data)
 
     def _resolve_ack(self, status: StatusPacket) -> None:
-        """Hand an ACK/NAK to a write that is waiting on one."""
+        """Hand an ACK/NAK to a write that is waiting on one.
+
+        A write that timed out may still have an acknowledgement in flight.
+        Because the link delivers in order, that straggler is the next one we
+        see, so it is discarded rather than allowed to satisfy a later write.
+        """
+        if self._unmatched_acks > 0:
+            self._unmatched_acks -= 1
+            _LOGGER.debug("Discarding late %s from a timed-out write", status.name)
+            return
+
         waiter = self._ack_waiter
         if waiter is not None and not waiter.done():
             waiter.set_result(status)
@@ -573,6 +627,10 @@ class ChandlerClient:
 
         self._state = ConnectionState.CONNECTING
         self._stop_event.clear()
+
+        # Anything left from a previous session would be read as a response to
+        # this session's handshake.
+        self._reset_session_state()
 
         try:
             # Use bleak-retry-connector for reliable connection
@@ -650,11 +708,22 @@ class ChandlerClient:
                 self._ack_waiter, timeout=WRITE_ACK_TIMEOUT
             )
         except asyncio.TimeoutError as err:
+            # The acknowledgement may still be on its way; make sure it does
+            # not get mistaken for the next write's.
+            self._unmatched_acks += 1
             raise ChandlerWriteError(
                 f"Timed out waiting for the device to acknowledge {payload}"
             ) from err
         finally:
             self._ack_waiter = None
+
+    def _reset_session_state(self) -> None:
+        """Drop anything carried over from a previous connection."""
+        while not self._notification_queue.empty():
+            self._notification_queue.get_nowait()
+        self._data_buffer.clear()
+        self._unmatched_acks = 0
+        self._ack_waiter = None
 
     async def _send_device_reset(self) -> None:
         """Ask the device to release the link before we drop it.

@@ -23,6 +23,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
+from .protocol import PacketError
 from .services import async_setup_services, async_unload_services
 
 _LOGGER = logging.getLogger(__name__)
@@ -139,7 +140,7 @@ class ChandlerDataUpdateCoordinator(DataUpdateCoordinator[DeviceData]):
             try:
                 client = await self._async_ensure_connected()
                 await client.async_write_keys(payload)
-            except (UpdateFailed, ChandlerWriteError) as err:
+            except (UpdateFailed, ChandlerWriteError, PacketError) as err:
                 raise HomeAssistantError(
                     f"Failed to send {payload} to the water system: {err}"
                 ) from err

@@ -8,7 +8,11 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, SWITCH_DESCRIPTIONS
+from .const import (
+    DOMAIN,
+    SWITCH_DESCRIPTIONS,
+    ChandlerSwitchEntityDescription,
+)
 from .entity import ChandlerEntity
 
 
@@ -35,6 +39,8 @@ async def async_setup_entry(
 class ChandlerSwitch(ChandlerEntity, SwitchEntity):
     """Boolean setting on a Chandler valve."""
 
+    entity_description: ChandlerSwitchEntityDescription
+
     @property
     def is_on(self) -> bool | None:
         """Return the flag the device currently reports."""
@@ -52,4 +58,3 @@ class ChandlerSwitch(ChandlerEntity, SwitchEntity):
         await self.coordinator.async_write_keys(
             {self.entity_description.write_key: int(enabled)}
         )
-        await self.coordinator.async_request_refresh()

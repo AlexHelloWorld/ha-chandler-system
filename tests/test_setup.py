@@ -197,6 +197,27 @@ async def test_start_regeneration_service(hass: HomeAssistant, setup_integration
     assert FakeClient.instances[0].writes == [{"grl": 1}]
 
 
+def test_fake_client_matches_the_real_interface():
+    """Guard against the fake drifting from ChandlerClient.
+
+    Without this, renaming a real client method leaves every test in this
+    module passing against a fake that no longer resembles it.
+    """
+    import inspect
+
+    from custom_components.chandler_system.client import ChandlerClient
+
+    for name in ("__init__", "connect", "disconnect", "async_write_keys",
+                 "set_ble_device"):
+        real = inspect.signature(getattr(ChandlerClient, name))
+        fake = inspect.signature(getattr(FakeClient, name))
+        assert list(real.parameters) == list(fake.parameters), name
+
+    assert isinstance(
+        inspect.getattr_static(ChandlerClient, "is_connected"), property
+    )
+
+
 async def test_unload_disconnects(hass: HomeAssistant, setup_integration):
     assert await hass.config_entries.async_unload(setup_integration.entry_id)
     await hass.async_block_till_done()

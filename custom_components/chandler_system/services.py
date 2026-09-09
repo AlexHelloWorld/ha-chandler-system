@@ -97,7 +97,6 @@ def async_setup_services(hass: HomeAssistant) -> None:
     async def _write(call: ServiceCall, payload: dict[str, Any]) -> None:
         coordinator = _coordinator_for_device(hass, call.data[ATTR_DEVICE_ID])
         await coordinator.async_write_keys(payload)
-        await coordinator.async_request_refresh()
 
     async def async_start_regeneration(call: ServiceCall) -> None:
         """Start a regeneration immediately or at the next scheduled time."""

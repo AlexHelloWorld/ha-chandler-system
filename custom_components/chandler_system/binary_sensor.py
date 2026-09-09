@@ -6,7 +6,11 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import BINARY_SENSOR_DESCRIPTIONS, DOMAIN
+from .const import (
+    BINARY_SENSOR_DESCRIPTIONS,
+    DOMAIN,
+    ChandlerBinarySensorEntityDescription,
+)
 from .entity import ChandlerEntity
 
 
@@ -32,6 +36,8 @@ async def async_setup_entry(
 
 class ChandlerBinarySensor(ChandlerEntity, BinarySensorEntity):
     """Binary sensor for Chandler Water System devices."""
+
+    entity_description: ChandlerBinarySensorEntityDescription
 
     @property
     def is_on(self) -> bool | None:

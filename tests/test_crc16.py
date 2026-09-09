@@ -1,14 +1,22 @@
-"""Test the CRC-16/KERMIT implementation."""
+"""Test the CRC-16 implementation."""
 from custom_components.chandler_system import crc16
 
-# The standard check value for CRC-16/KERMIT.
 CHECK_VECTOR = b"123456789"
+# Catalogue check value for CRC-16/CCITT-FALSE (IBM-3740).
 CHECK_VALUE = 0x29B1
+# CRC-16/KERMIT, which the vendor guide misnames this algorithm as, checks
+# to a different value. Asserting both ways round keeps anyone from
+# "fixing" the implementation to match the vendor's label.
+KERMIT_CHECK_VALUE = 0x2189
 
 
 def test_check_vector():
     """The catalogue check value pins the algorithm variant."""
     assert crc16.compute(CHECK_VECTOR) == CHECK_VALUE
+
+
+def test_is_not_kermit_despite_the_vendor_naming():
+    assert crc16.compute(CHECK_VECTOR) != KERMIT_CHECK_VALUE
 
 
 def test_verify_round_trip():

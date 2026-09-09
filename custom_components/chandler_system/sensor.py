@@ -9,7 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, SENSOR_DESCRIPTIONS
+from .const import DOMAIN, SENSOR_DESCRIPTIONS, ChandlerSensorEntityDescription
 from .entity import ChandlerEntity
 
 _LOGGER = logging.getLogger(__name__)
@@ -37,6 +37,12 @@ async def async_setup_entry(
 
 class ChandlerSensor(ChandlerEntity, SensorEntity):
     """Sensor for Chandler Water System devices."""
+
+    entity_description: ChandlerSensorEntityDescription
+
+    # The error log and graph arrays would otherwise be written to the
+    # recorder database on every state change.
+    _unrecorded_attributes = frozenset({"error_log", "history"})
 
     @property
     def native_value(self) -> Any:

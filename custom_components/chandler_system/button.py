@@ -6,7 +6,11 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import BUTTON_DESCRIPTIONS, DOMAIN
+from .const import (
+    BUTTON_DESCRIPTIONS,
+    DOMAIN,
+    ChandlerButtonEntityDescription,
+)
 from .entity import ChandlerEntity
 
 
@@ -33,9 +37,12 @@ async def async_setup_entry(
 class ChandlerButton(ChandlerEntity, ButtonEntity):
     """Button that sends a command to a Chandler valve."""
 
+    entity_description: ChandlerButtonEntityDescription
+
     async def async_press(self) -> None:
         """Send the button's command to the device."""
+        # The device pushes the resulting state change on its own; there is
+        # nothing to poll for.
         await self.coordinator.async_write_keys(
             self.entity_description.press_payload
         )
-        await self.coordinator.async_request_refresh()

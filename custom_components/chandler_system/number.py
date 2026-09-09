@@ -6,7 +6,11 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, NUMBER_DESCRIPTIONS
+from .const import (
+    DOMAIN,
+    NUMBER_DESCRIPTIONS,
+    ChandlerNumberEntityDescription,
+)
 from .entity import ChandlerEntity
 
 
@@ -33,6 +37,8 @@ async def async_setup_entry(
 class ChandlerNumber(ChandlerEntity, NumberEntity):
     """Writable setting on a Chandler valve."""
 
+    entity_description: ChandlerNumberEntityDescription
+
     @property
     def native_value(self) -> float | None:
         """Return the value the device currently reports."""
@@ -44,4 +50,3 @@ class ChandlerNumber(ChandlerEntity, NumberEntity):
         raw_value = round(value * description.write_scale)
 
         await self.coordinator.async_write_keys({description.write_key: raw_value})
-        await self.coordinator.async_request_refresh()

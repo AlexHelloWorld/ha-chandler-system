@@ -1,9 +1,20 @@
-"""CRC-16/KERMIT (CCITT) checksums for Chandler Bluetooth packets."""
+"""CRC-16 checksums for Chandler Bluetooth packets.
+
+The algorithm is CRC-16/CCITT-FALSE (aka IBM-3740): polynomial 0x1021, initial
+value 0xFFFF, non-reflected. Its catalogue check value over b"123456789" is
+0x29B1.
+
+The vendor guide calls this "CRC-16/KERMIT aka CRC-16/CCITT", which is wrong --
+KERMIT is the reflected variant seeded with 0x0000 and checks to 0x2189. Do not
+"correct" this implementation to match the vendor's name: the bytes below are
+what the device actually computes, and swapping in a stock KERMIT routine would
+invalidate every packet.
+"""
 from __future__ import annotations
 
 DEFAULT_SEED = 0xFFFF
 
-# The residue of a correct message with its CRC appended, per CRC-16/KERMIT.
+# The residue of a correct message with its CRC appended.
 _VALID_RESIDUE = 0x0000
 
 

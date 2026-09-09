@@ -16,18 +16,38 @@ from custom_components.chandler_system.client import (
 class FakeValve:
     """Stands in for the BLE link, recording writes and replying like a valve."""
 
-    def __init__(self, reply=protocol.PACKET_ACK):
+    def __init__(self, reply=protocol.PACKET_ACK, replies=None):
         self.is_connected = True
         self.written: list[bytes] = []
+        # `replies` scripts one status byte per data packet, in order;
+        # `reply` uses the same byte every time.
+        self.replies = list(replies) if replies is not None else None
         self.reply = reply
+        self.stop_notify_calls = 0
+        self.disconnect_calls = 0
         self.client: ChandlerClient | None = None
 
     async def write_gatt_char(self, _char, data, response=False):
         self.written.append(bytes(data))
-        if self.reply is not None and len(data) > 1:
+        if len(data) <= 1:
+            return
+
+        if self.replies is not None:
+            status = self.replies.pop(0) if self.replies else None
+        else:
+            status = self.reply
+
+        if status is not None:
             # The real device answers a data packet with a status byte, which
             # arrives via the notification queue.
-            self.client._notification_queue.put_nowait(bytes([self.reply]))
+            self.client._notification_queue.put_nowait(bytes([status]))
+
+    async def stop_notify(self, _char):
+        self.stop_notify_calls += 1
+
+    async def disconnect(self):
+        self.disconnect_calls += 1
+        self.is_connected = False
 
     @property
     def data_packets(self) -> list[dict]:
@@ -49,8 +69,10 @@ def client():
     instance._notification_queue = asyncio.Queue()
     instance._write_lock = asyncio.Lock()
     instance._ack_waiter = None
+    instance._unmatched_acks = 0
     instance._state = ConnectionState.CONNECTED
     instance._stop_event = asyncio.Event()
+    instance._monitor_task = None
     return instance
 
 
@@ -89,6 +111,41 @@ async def test_write_retries_once_then_fails_on_nak(client):
         await write
 
     assert valve.data_packets == [{"dwh": 25}, {"dwh": 25}]
+
+
+async def test_write_succeeds_on_second_attempt_after_nak(client):
+    """The point of the retry: a NAK'd packet resent and then accepted."""
+    valve = attach(
+        client, FakeValve(replies=[protocol.PACKET_NAK, protocol.PACKET_ACK])
+    )
+
+    write = asyncio.create_task(client.async_write_keys({"dwh": 25}))
+    await asyncio.sleep(0)
+    await pump(client, count=2)
+    await write
+
+    assert valve.data_packets == [{"dwh": 25}, {"dwh": 25}]
+
+
+async def test_late_ack_does_not_satisfy_the_next_write(client, monkeypatch):
+    """A timed-out write's straggling ACK must not succeed a later write."""
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.WRITE_ACK_TIMEOUT", 0.01
+    )
+    attach(client, FakeValve(reply=None))
+
+    with pytest.raises(ChandlerWriteError, match="Timed out"):
+        await client.async_write_keys({"dwh": 25})
+
+    # The first write's acknowledgement finally shows up.
+    client._notification_queue.put_nowait(bytes([protocol.PACKET_ACK]))
+
+    second = asyncio.create_task(client.async_write_keys({"grn": 1}))
+    await asyncio.sleep(0)
+    await pump(client)
+
+    with pytest.raises(ChandlerWriteError, match="Timed out"):
+        await second
 
 
 async def test_write_raises_when_not_connected(client):
@@ -180,6 +237,7 @@ async def test_authenticate_answers_keepalive_then_sends_token(client):
     client._auth_token = bytearray(b"\x01\x02\x03\x04")
     client._notification_queue.put_nowait(bytes([protocol.PACKET_MARCO]))
     client._notification_queue.put_nowait(bytes([protocol.PACKET_ACK]))
+    client._notification_queue.put_nowait(protocol.build_data_packet({"as": 2}))
 
     assert await client._authenticate()
 
@@ -187,6 +245,7 @@ async def test_authenticate_answers_keepalive_then_sends_token(client):
         bytes([protocol.PACKET_AUTH_REQUEST]),
         bytes([protocol.PACKET_POLO]),
         b"\x01\x02\x03\x04",
+        bytes([protocol.PACKET_ACK]),
     ]
     assert client._state is ConnectionState.CONNECTED
 
@@ -195,13 +254,57 @@ async def test_authenticate_acks_preauth_data(client):
     """Initial data arrives before the token and must be acknowledged."""
     valve = attach(client, FakeValve(reply=None))
     client._auth_token = bytearray(b"\x01")
-    client._notification_queue.put_nowait(protocol.build_data_packet({"as": 1}))
+    client._notification_queue.put_nowait(protocol.build_data_packet({"dwh": 30}))
     client._notification_queue.put_nowait(bytes([protocol.PACKET_ACK]))
+    client._notification_queue.put_nowait(protocol.build_data_packet({"as": 2}))
 
     assert await client._authenticate()
 
     assert bytes([protocol.PACKET_ACK]) in valve.written
-    assert client.data.auth_state == 1
+    assert client.data.water_hardness == 30
+
+
+async def test_authenticate_fails_when_token_is_rejected(client):
+    """A bad token yields an unauthenticated state, not silence."""
+    attach(client, FakeValve(reply=None))
+    client._auth_token = bytearray(b"\x01")
+    client._notification_queue.put_nowait(bytes([protocol.PACKET_ACK]))
+    client._notification_queue.put_nowait(protocol.build_data_packet({"as": 1}))
+
+    assert not await client._authenticate()
+    assert client._state is not ConnectionState.CONNECTED
+
+
+async def test_authenticate_gives_up_when_device_never_confirms(client, monkeypatch):
+    """Keep-alives alone must not keep the handshake alive forever."""
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.AUTH_TIMEOUT", 0.05
+    )
+    attach(client, FakeValve(reply=None))
+    client._auth_token = bytearray(b"\x01")
+    client._notification_queue.put_nowait(bytes([protocol.PACKET_ACK]))
+
+    async def keep_marcoing():
+        for _ in range(50):
+            client._notification_queue.put_nowait(bytes([protocol.PACKET_MARCO]))
+            await asyncio.sleep(0.005)
+
+    pump_task = asyncio.create_task(keep_marcoing())
+    assert not await client._authenticate()
+    pump_task.cancel()
+
+
+async def test_disconnect_sends_device_reset_before_dropping_the_link(client):
+    """The valve holds the connection open unless it is told to release it."""
+    valve = attach(client, FakeValve(reply=None))
+
+    await client.disconnect()
+
+    assert valve.written == [bytes([protocol.PACKET_DEVICE_RESET])]
+    assert valve.written[0] == b"R"
+    assert valve.stop_notify_calls == 1
+    assert valve.disconnect_calls == 1
+    assert client._state is ConnectionState.DISCONNECTED
 
 
 def _framed(header: int, payload: bytes) -> bytes:
