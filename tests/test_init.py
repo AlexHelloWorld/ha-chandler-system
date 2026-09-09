@@ -1,5 +1,4 @@
 """Test Chandler Water System integration initialization."""
-import pytest
 
 from custom_components.chandler_system.const import DOMAIN
 

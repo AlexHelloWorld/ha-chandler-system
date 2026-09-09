@@ -12,22 +12,37 @@ from bleak import BleakClient
 from bleak.backends.device import BLEDevice
 from bleak_retry_connector import establish_connection
 
+from . import protocol
 from .const import (
     CHAR_UUID_READ,
     CHAR_UUID_WRITE,
+    REGEN_STATE_MAP,
+    REGEN_TIME_TYPE_MINUTES,
+    REGEN_TIME_TYPE_SECONDS,
+    get_error_text,
 )
+from .protocol import StatusPacket
 
 _LOGGER = logging.getLogger(__name__)
 
-# Protocol constants
-AUTH_REQUEST = 0xEA
-ACK = 0xCC
-KEEP_ALIVE_MARCO = 0xE0
-KEEP_ALIVE_POLO = 0xF0
+# How long to wait for the device to ACK a write before giving up.
+WRITE_ACK_TIMEOUT = 5.0
+# Overall budget for the handshake, which spans several device round trips.
+AUTH_TIMEOUT = 30.0
+# The device needs a moment to close the link after a reset command.
+DEVICE_RESET_DELAY = 0.15
 
-# Header bits
-HEADER_FIRST_PACKET = 0x80
-HEADER_LAST_PACKET = 0x40
+# Authentication states reported by the device in the "as" key.
+AUTH_STATE_NOT_AUTHENTICATED = 1
+AUTH_STATE_AUTHENTICATED = 2
+
+
+class ChandlerWriteError(Exception):
+    """Raised when a write to the device could not be delivered."""
+
+
+class ChandlerAuthError(Exception):
+    """Raised when the device rejects the authentication token."""
 
 
 class ConnectionState(Enum):
@@ -37,6 +52,31 @@ class ConnectionState(Enum):
     CONNECTING = 1
     AUTHENTICATING = 2
     CONNECTED = 3
+
+
+@dataclass(frozen=True)
+class ErrorLogEntry:
+    """One entry from the device's rolling 20-error log."""
+
+    days_in_operation: int
+    hours: int
+    minutes: int
+    seconds: int
+    error_code: int
+
+    @property
+    def error_text(self) -> str:
+        """Human-readable error description."""
+        return get_error_text(self.error_code)
+
+    def as_dict(self) -> dict[str, Any]:
+        """Render for use as a Home Assistant state attribute."""
+        return {
+            "days_in_operation": self.days_in_operation,
+            "time": f"{self.hours:02d}:{self.minutes:02d}:{self.seconds:02d}",
+            "error_code": self.error_code,
+            "error": self.error_text,
+        }
 
 
 @dataclass
@@ -101,6 +141,14 @@ class DeviceData:
     regen_state: int | None = None  # grs
     auth_state: int | None = None  # as (2 = authenticated)
 
+    # Error log (last 20 entries, newest first)
+    error_log: list[ErrorLogEntry] = field(default_factory=list)  # shel
+
+    # Graphs (values already converted from hundredths)
+    peak_flow_history: list[float] = field(default_factory=list)  # grp
+    daily_gallons_history: list[float] = field(default_factory=list)  # ggd
+    gallons_between_regens: list[float] = field(default_factory=list)  # ggr
+
     # Raw data for debugging
     raw_data: dict[str, Any] = field(default_factory=dict)
 
@@ -130,6 +178,77 @@ class DeviceData:
             # remaining / 10 converts to pounds, then calculate percentage
             return min(100.0, (remaining / 10.0 / total) * 100.0)
         return None
+
+    @property
+    def regen_state_text(self) -> str | None:
+        """Human-readable regeneration state.
+
+        Returns None for a code outside the documented range rather than a
+        placeholder string: the sensor declares these values as its enum
+        options, and Home Assistant rejects a state that is not among them.
+        """
+        if self.regen_state is None:
+            return None
+        return REGEN_STATE_MAP.get(self.regen_state)
+
+    @property
+    def regen_step_remaining_seconds(self) -> int | None:
+        """Seconds left in the current regeneration step.
+
+        The device reports the remaining amount in the unit named by
+        regen_time_type; when that unit is salt pounds there is no time to
+        report.
+        """
+        if self.regen_time_remaining is None:
+            return None
+        if self.regen_time_type == REGEN_TIME_TYPE_SECONDS:
+            return self.regen_time_remaining
+        if self.regen_time_type == REGEN_TIME_TYPE_MINUTES:
+            return self.regen_time_remaining * 60
+        return None
+
+    @property
+    def last_error(self) -> ErrorLogEntry | None:
+        """Most recent real error, or None if the log holds only empty slots."""
+        for entry in self.error_log:
+            if entry.error_code != 0:
+                return entry
+        return None
+
+    @property
+    def has_valve_error(self) -> bool | None:
+        """Whether the valve is currently reporting an error."""
+        if self.valve_error is None:
+            return None
+        return self.valve_error != 0
+
+
+def _parse_error_log(raw: Any) -> list[ErrorLogEntry]:
+    """Build error log entries from the device's shel array."""
+    if not isinstance(raw, list):
+        return []
+
+    entries = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        entries.append(
+            ErrorLogEntry(
+                days_in_operation=item.get("d", 0),
+                hours=item.get("h", 0),
+                minutes=item.get("m", 0),
+                seconds=item.get("s", 0),
+                error_code=item.get("e", 0),
+            )
+        )
+    return entries
+
+
+def _parse_graph(raw: Any) -> list[float]:
+    """Convert a graph array from hundredths to whole units."""
+    if not isinstance(raw, list):
+        return []
+    return [value / 100.0 for value in raw if isinstance(value, (int, float))]
 
 
 class ChandlerClient:
@@ -162,6 +281,9 @@ class ChandlerClient:
         self._data = DeviceData()
         self._monitor_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
+        self._write_lock = asyncio.Lock()
+        self._ack_waiter: asyncio.Future[StatusPacket] | None = None
+        self._unmatched_acks = 0
 
     def set_ble_device(self, ble_device: BLEDevice) -> None:
         """Update the BLE device (address may change on different hosts)."""
@@ -211,51 +333,84 @@ class ChandlerClient:
         )
 
     async def _authenticate(self) -> bool:
-        """Authenticate with the device."""
+        """Authenticate with the device.
+
+        Sends the ID packet, then the token once the device acknowledges it,
+        then waits for the device to report itself authenticated. The device
+        answers a rejected token with an unauthenticated state and otherwise
+        just keeps the link alive, so only the reported state distinguishes
+        success from failure.
+        """
         self._state = ConnectionState.AUTHENTICATING
+        self._data.auth_state = None
 
-        # Send ID status packet
-        await self._send_packet(bytes([AUTH_REQUEST]))
+        await self._send_packet(
+            protocol.build_status_packet(protocol.PACKET_AUTH_REQUEST)
+        )
 
-        # Wait for ACK and initial data
+        token_sent = False
+        deadline = asyncio.get_running_loop().time() + AUTH_TIMEOUT
+
         while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                _LOGGER.error(
+                    "Authentication timed out after %ss (state: %s)",
+                    AUTH_TIMEOUT,
+                    self._data.auth_state,
+                )
+                return False
+
             try:
-                data = await self._wait_for_response(timeout=10.0)
-                if len(data) == 1 and data[0] == ACK:
-                    # Send auth token
-                    await self._send_packet(self._auth_token)
-                    self._state = ConnectionState.CONNECTED
-                    _LOGGER.info("Authentication successful")
-                    return True
-                else:
-                    # Unused data, ignore and send ACK
-                    await self._send_packet(bytes([ACK]))
+                data = await self._wait_for_response(timeout=remaining)
             except asyncio.TimeoutError:
                 _LOGGER.error("Authentication timeout")
                 return False
 
-    def _process_packet(self, data: bytes) -> None:
-        """Process a received data packet."""
-        if len(data) < 3:
-            return
+            if not token_sent and protocol.classify_status(data) is StatusPacket.ACK:
+                await self._send_packet(self._auth_token)
+                token_sent = True
+                continue
 
-        header = data[0]
+            # Before authenticating the device still sends initial data
+            # and keep-alives; both need the normal responses or it
+            # drops the link.
+            await self._handle_incoming(data)
 
-        # Check for keep-alive
-        if len(data) == 1:
-            if header == KEEP_ALIVE_MARCO:
-                asyncio.create_task(
-                    self._send_packet(bytes([KEEP_ALIVE_POLO]))
+            if self._data.auth_state == AUTH_STATE_AUTHENTICATED:
+                self._state = ConnectionState.CONNECTED
+                _LOGGER.info("Authentication successful")
+                return True
+
+            if token_sent and self._data.auth_state == AUTH_STATE_NOT_AUTHENTICATED:
+                _LOGGER.error(
+                    "Device rejected the authentication token. Generate a new "
+                    "one in the Chandler/Springwell app and reconfigure."
                 )
+                return False
+
+    async def _process_packet(self, data: bytes) -> None:
+        """Validate a received data packet, then ACK or NAK it."""
+        try:
+            header, payload = protocol.parse_data_packet(data)
+        except protocol.PacketError as err:
+            _LOGGER.warning("Rejecting packet: %s", err)
+            await self._send_packet(
+                protocol.build_status_packet(protocol.PACKET_NAK)
+            )
             return
 
-        # Extract JSON payload (skip header, remove CRC16 at end)
-        payload = data[1:-2]
+        await self._send_packet(
+            protocol.build_status_packet(protocol.PACKET_ACK)
+        )
+
+        # A new first packet supersedes any partial transfer we were holding.
+        if protocol.is_flag_set(header, protocol.HEADER_FIRST_PACKET):
+            self._data_buffer.clear()
+
         self._data_buffer.extend(payload)
 
-        # Check if this is the last packet
-        is_last = bool(header & HEADER_LAST_PACKET)
-        if is_last:
+        if protocol.is_flag_set(header, protocol.HEADER_LAST_PACKET):
             self._parse_json_data()
             self._data_buffer.clear()
 
@@ -372,6 +527,16 @@ class ChandlerClient:
             self._data.total_gallons = json_data["shgt"]
         if "shgr" in json_data:
             self._data.total_gallons_resettable = json_data["shgr"]
+        if "shel" in json_data:
+            self._data.error_log = _parse_error_log(json_data["shel"])
+
+        # Graphs
+        if "grp" in json_data:
+            self._data.peak_flow_history = _parse_graph(json_data["grp"])
+        if "ggd" in json_data:
+            self._data.daily_gallons_history = _parse_graph(json_data["ggd"])
+        if "ggr" in json_data:
+            self._data.gallons_between_regens = _parse_graph(json_data["ggr"])
 
         # Global
         if "gvs" in json_data:
@@ -387,6 +552,47 @@ class ChandlerClient:
         if "as" in json_data:
             self._data.auth_state = json_data["as"]
 
+    async def _handle_incoming(self, data: bytes) -> None:
+        """Dispatch one packet received from the device."""
+        status = protocol.classify_status(data)
+
+        if status is StatusPacket.MARCO:
+            await self._send_packet(
+                protocol.build_status_packet(protocol.PACKET_POLO)
+            )
+        elif status is StatusPacket.TIMEOUT_QUERY:
+            # Last-ditch liveness check from the device before it drops us.
+            await self._send_packet(
+                protocol.build_status_packet(protocol.PACKET_TIMEOUT_ACK)
+            )
+        elif status in (StatusPacket.ACK, StatusPacket.NAK):
+            self._resolve_ack(status)
+        elif status is not None:
+            _LOGGER.debug("Ignoring status packet %s", status.name)
+        elif len(data) <= 1:
+            # An undocumented status byte. NAKing it would ask the device to
+            # retransmit something it does not consider a data packet, so it
+            # is only logged.
+            _LOGGER.debug("Ignoring unrecognized byte %s", data.hex())
+        else:
+            await self._process_packet(data)
+
+    def _resolve_ack(self, status: StatusPacket) -> None:
+        """Hand an ACK/NAK to a write that is waiting on one.
+
+        A write that timed out may still have an acknowledgement in flight.
+        Because the link delivers in order, that straggler is the next one we
+        see, so it is discarded rather than allowed to satisfy a later write.
+        """
+        if self._unmatched_acks > 0:
+            self._unmatched_acks -= 1
+            _LOGGER.debug("Discarding late %s from a timed-out write", status.name)
+            return
+
+        waiter = self._ack_waiter
+        if waiter is not None and not waiter.done():
+            waiter.set_result(status)
+
     async def _monitor_loop(self) -> None:
         """Monitor loop to handle incoming packets."""
         _LOGGER.debug("Starting monitor loop")
@@ -396,17 +602,7 @@ class ChandlerClient:
                     self._notification_queue.get(),
                     timeout=30.0,
                 )
-
-                if len(data) == 1 and data[0] == KEEP_ALIVE_MARCO:
-                    # Keep-alive: respond with polo
-                    await self._send_packet(bytes([KEEP_ALIVE_POLO]))
-                elif len(data) == 1 and data[0] == ACK:
-                    # ACK: nothing to do
-                    pass
-                else:
-                    # Data packet: send ACK and process
-                    await self._send_packet(bytes([ACK]))
-                    self._process_packet(data)
+                await self._handle_incoming(data)
 
             except asyncio.TimeoutError:
                 # Connection might be stale, but don't break
@@ -436,6 +632,10 @@ class ChandlerClient:
 
         self._state = ConnectionState.CONNECTING
         self._stop_event.clear()
+
+        # Anything left from a previous session would be read as a response to
+        # this session's handshake.
+        self._reset_session_state()
 
         try:
             # Use bleak-retry-connector for reliable connection
@@ -472,6 +672,78 @@ class ChandlerClient:
             self._state = ConnectionState.DISCONNECTED
             return False
 
+    async def async_write_keys(self, payload: dict[str, Any]) -> None:
+        """Write API keys to the device and wait for it to acknowledge.
+
+        The device silently ignores keys it does not accept and writes that
+        match its current value, so an ACK confirms delivery only -- not that
+        anything changed.
+        """
+        if not self.is_connected:
+            raise ChandlerWriteError("Not connected to the device")
+
+        packet = protocol.build_data_packet(payload)
+
+        async with self._write_lock:
+            # One retry: a NAK means the device saw a malformed packet, which
+            # a straight resend usually clears.
+            for attempt in range(2):
+                status = await self._send_and_await_ack(packet, payload)
+
+                if status is StatusPacket.ACK:
+                    return
+                if status is StatusPacket.NAK:
+                    _LOGGER.warning(
+                        "Device rejected write %s (attempt %d)",
+                        payload,
+                        attempt + 1,
+                    )
+
+            raise ChandlerWriteError(f"Device rejected write {payload}")
+
+    async def _send_and_await_ack(
+        self, packet: bytes, payload: dict[str, Any]
+    ) -> StatusPacket | None:
+        """Send a data packet and wait for the monitor loop to see an ACK."""
+        loop = asyncio.get_running_loop()
+        self._ack_waiter = loop.create_future()
+        try:
+            await self._send_packet(packet)
+            return await asyncio.wait_for(
+                self._ack_waiter, timeout=WRITE_ACK_TIMEOUT
+            )
+        except asyncio.TimeoutError as err:
+            # The acknowledgement may still be on its way; make sure it does
+            # not get mistaken for the next write's.
+            self._unmatched_acks += 1
+            raise ChandlerWriteError(
+                f"Timed out waiting for the device to acknowledge {payload}"
+            ) from err
+        finally:
+            self._ack_waiter = None
+
+    def _reset_session_state(self) -> None:
+        """Drop anything carried over from a previous connection."""
+        while not self._notification_queue.empty():
+            self._notification_queue.get_nowait()
+        self._data_buffer.clear()
+        self._unmatched_acks = 0
+        self._ack_waiter = None
+
+    async def _send_device_reset(self) -> None:
+        """Ask the device to release the link before we drop it.
+
+        These valves otherwise hold the connection open long past our
+        disconnect, which blocks the next connection attempt.
+        """
+        try:
+            await self._send_packet(
+                protocol.build_status_packet(protocol.PACKET_DEVICE_RESET)
+            )
+            await asyncio.sleep(DEVICE_RESET_DELAY)
+        except Exception as err:
+            _LOGGER.debug("Device reset command failed: %s", err)
+
     async def disconnect(self) -> None:
         """Disconnect from the device."""
         _LOGGER.info("Disconnecting from device")
@@ -489,17 +761,13 @@ class ChandlerClient:
         # Drain remaining packets from queue
         while not self._notification_queue.empty():
             data = self._notification_queue.get_nowait()
-            if len(data) == 1 and data[0] == KEEP_ALIVE_MARCO:
-                await self._send_packet(bytes([KEEP_ALIVE_POLO]))
-            elif len(data) == 1 and data[0] == ACK:
-                pass
-            else:
-                self._process_packet(data)
+            await self._handle_incoming(data)
 
         # Disconnect BLE client
         if self._client:
             try:
                 if self._client.is_connected:
+                    await self._send_device_reset()
                     await self._client.stop_notify(CHAR_UUID_READ)
                     await self._client.disconnect()
             except Exception as e:

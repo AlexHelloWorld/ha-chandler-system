@@ -1,0 +1,67 @@
+start_regeneration:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: chandler_system
+    when:
+      default: now
+      selector:
+        select:
+          options:
+            - value: now
+              label: Immediately
+            - value: next_scheduled
+              label: At the next scheduled regeneration time
+
+find_home:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: chandler_system
+
+set_salt_level:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: chandler_system
+    pounds:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 400
+          step: 1
+          unit_of_measurement: lb
+          mode: box
+
+reset_counters:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: chandler_system
+    counters:
+      required: true
+      selector:
+        select:
+          multiple: true
+          options:
+            - value: regenerations
+              label: Regenerations since reset
+            - value: gallons
+              label: Gallons since reset
+
+sync_clock:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: chandler_system
