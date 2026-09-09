@@ -105,8 +105,160 @@
       },
       "total_grains_capacity": {
         "name": "Total Grains Capacity"
+      },
+      "regen_state": {
+        "name": "Regeneration State"
+      },
+      "regen_position": {
+        "name": "Regeneration Position"
+      },
+      "regen_step_remaining": {
+        "name": "Regeneration Step Time Remaining"
+      },
+      "brine_soak_remaining": {
+        "name": "Brine Soak Time Remaining"
+      },
+      "regen_counter_resettable": {
+        "name": "Regenerations Since Reset"
+      },
+      "total_gallons_resettable": {
+        "name": "Gallons Since Reset"
+      },
+      "next_regen_time": {
+        "name": "Scheduled Regeneration Time"
+      },
+      "last_error": {
+        "name": "Last Error"
+      },
+      "gallons_between_regens": {
+        "name": "Gallons Used Last Regeneration Cycle"
+      },
+      "daily_gallons_history": {
+        "name": "Gallons Used Yesterday"
+      },
+      "peak_flow_history": {
+        "name": "Peak Flow Yesterday"
+      }
+    },
+    "binary_sensor": {
+      "regen_active_state": {
+        "name": "Regeneration Active"
+      },
+      "salt_low_state": {
+        "name": "Salt Low"
+      },
+      "valve_error_state": {
+        "name": "Valve Error"
+      },
+      "in_aeration": {
+        "name": "In Aeration"
+      },
+      "in_brine_soak": {
+        "name": "In Brine Soak"
+      }
+    },
+    "button": {
+      "regen_now": {
+        "name": "Start Regeneration Now"
+      },
+      "regen_later": {
+        "name": "Schedule Regeneration"
+      },
+      "find_home": {
+        "name": "Find Home"
+      }
+    },
+    "number": {
+      "set_water_hardness": {
+        "name": "Water Hardness Setting"
+      },
+      "set_day_override": {
+        "name": "Day Override"
+      },
+      "set_regen_time_hour": {
+        "name": "Regeneration Hour"
+      },
+      "set_reserve_capacity": {
+        "name": "Reserve Capacity Setting"
+      },
+      "set_total_grains": {
+        "name": "Total Grains Capacity Setting"
+      },
+      "set_salt_remaining": {
+        "name": "Salt Remaining Setting"
+      }
+    },
+    "switch": {
+      "auto_reserve_mode": {
+        "name": "Auto Reserve Mode"
+      },
+      "display_off": {
+        "name": "Display Off"
+      }
+    }
+  },
+  "services": {
+    "start_regeneration": {
+      "name": "Start regeneration",
+      "description": "Starts a regeneration cycle on the water system. A regeneration uses water and salt and cannot be cancelled once it begins.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The water system to regenerate."
+        },
+        "when": {
+          "name": "When",
+          "description": "Start the cycle immediately, or queue it for the next scheduled regeneration time."
+        }
+      }
+    },
+    "find_home": {
+      "name": "Find home",
+      "description": "Tells the valve to locate its home position. Useful after a 'Lost Home' or 'Can't Find Home' error.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The water system to command."
+        }
+      }
+    },
+    "set_salt_level": {
+      "name": "Set salt level",
+      "description": "Records how much salt is in the brine tank, for example after refilling it.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The water system to update."
+        },
+        "pounds": {
+          "name": "Salt",
+          "description": "Pounds of salt currently in the brine tank."
+        }
+      }
+    },
+    "reset_counters": {
+      "name": "Reset counters",
+      "description": "Zeroes the resettable regeneration and gallon counters. Lifetime totals are not affected.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The water system to update."
+        },
+        "counters": {
+          "name": "Counters",
+          "description": "Which resettable counters to zero."
+        }
+      }
+    },
+    "sync_clock": {
+      "name": "Sync clock",
+      "description": "Sets the valve's clock to match Home Assistant's local time. The valve schedules regenerations against its own clock, so drift shifts when they run.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The water system to update."
+        }
       }
     }
   }
 }
-

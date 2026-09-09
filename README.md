@@ -14,7 +14,9 @@ A custom Home Assistant integration to monitor and control Chandler Systems wate
 
 - 📊 Monitor salt level and remaining capacity
 - 💧 Track water flow and daily usage
-- 🔄 View regeneration status and history
+- 🔄 Follow a regeneration cycle live — state, valve position, and step timers
+- ▶️ Start a regeneration on demand, or queue one for the next scheduled time
+- ⚙️ Adjust settings from HA: water hardness, day override, reserve capacity, and more
 - 🔋 Monitor battery voltage
 - 📱 Bluetooth Low Energy (BLE) connectivity
 - 🔍 Auto-discovery of nearby devices
@@ -65,16 +67,87 @@ The authentication token can be found in the manufacturer's mobile app:
 | Days Until Regeneration | Sensor | Estimated days |
 | Days Since Last Regeneration | Sensor | Days since last regen |
 | Total Regeneration Cycles | Sensor | Lifetime regen count |
-| Regeneration Active | Sensor | On/Off status |
 | Salt Level | Sensor | Percentage remaining |
 | Salt Remaining | Sensor | Pounds remaining |
-| Salt Low Alert | Sensor | OK/Low status |
 | Water Hardness | Sensor | Configured GPG |
 | Battery Voltage | Sensor | Battery level in volts |
 | Days In Operation | Sensor | Total days active |
-| Valve Error | Sensor | Error status |
 | Reserve Capacity | Sensor | Reserve gallons |
 | Total Grains Capacity | Sensor | System capacity |
+| Salt Low | Binary Sensor | Problem when the brine tank is low |
+| Valve Error | Binary Sensor | Problem when the valve reports a fault |
+
+### Regeneration
+
+| Entity | Type | Description |
+|--------|------|-------------|
+| Regeneration Active | Binary Sensor | Whether a cycle is running right now |
+| Regeneration State | Sensor | Current step, e.g. "Waiting In Brine Soak" |
+| Regeneration Position | Sensor | Valve position, with `total_positions` attribute |
+| Regeneration Step Time Remaining | Sensor | Seconds left in the current step |
+| Brine Soak Time Remaining | Sensor | Minutes left in the brine soak |
+| In Aeration | Binary Sensor | Whether the cycle is in aeration |
+| In Brine Soak | Binary Sensor | Whether the cycle is in brine soak |
+| Regenerations Since Reset | Sensor | Resettable regen count |
+| Gallons Since Reset | Sensor | Resettable gallon total |
+| Scheduled Regeneration Time | Sensor | Hour of day regens are scheduled for |
+| Gallons Used Last Regeneration Cycle | Sensor | With a `history` attribute of prior cycles |
+| Last Error | Sensor | Most recent fault, with the full 20-entry `error_log` attribute |
+
+### Controls
+
+> [!WARNING]
+> **Start Regeneration Now** immediately begins a real regeneration cycle. It uses
+> water and salt, takes the system offline for the duration, and **cannot be
+> cancelled** — the API has no abort command. Consider hiding this button or
+> putting it behind a confirmation in your dashboard.
+
+| Entity | Type | Description |
+|--------|------|-------------|
+| Start Regeneration Now | Button | Begins a cycle immediately |
+| Schedule Regeneration | Button | Queues a cycle for the next scheduled time |
+| Find Home | Button | Returns the valve to its home position |
+| Water Hardness Setting | Number | 0–99 GPG |
+| Day Override | Number | 0–29 days between forced regens |
+| Regeneration Hour | Number | 0–23, hour of day regens run |
+| Reserve Capacity Setting | Number | 0–49 % |
+| Total Grains Capacity Setting | Number | Up to 399,000 grains |
+| Salt Remaining Setting | Number | Record a brine tank refill |
+| Auto Reserve Mode | Switch | Automatic vs. manual reserve |
+| Display Off | Switch | Turn the valve's display off |
+
+## Services
+
+| Service | Description |
+|---------|-------------|
+| `chandler_system.start_regeneration` | Start a cycle `now` or at the `next_scheduled` time |
+| `chandler_system.find_home` | Locate the valve's home position |
+| `chandler_system.set_salt_level` | Record pounds of salt after a refill |
+| `chandler_system.reset_counters` | Zero the resettable regen and gallon counters |
+| `chandler_system.sync_clock` | Set the valve's clock from Home Assistant |
+
+```yaml
+# Regenerate when salt is topped up and the tank is nearly exhausted
+action:
+  - service: chandler_system.start_regeneration
+    data:
+      device_id: !input water_system
+      when: next_scheduled
+```
+
+### A note on writes
+
+The valve silently ignores a write that matches the value it already holds, and
+ignores keys it does not accept. A successful call therefore means the command
+was *delivered* — not that anything changed. Watch the relevant sensor to
+confirm an actual change.
+
+### Replaced entities
+
+The `Regeneration Active`, `Salt Low Alert`, and `Valve Error` **sensors** are
+superseded by binary sensors of the same name and are now disabled for new
+installs. Existing installs keep them enabled so dashboards don't break; you can
+disable them manually once you've switched to the binary sensors.
 
 ## Troubleshooting
 
