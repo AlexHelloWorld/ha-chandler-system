@@ -191,6 +191,15 @@ async def test_valid_data_packet_is_acked_and_parsed(client):
     assert client.data.water_hardness == 30
 
 
+async def test_unrecognized_status_byte_is_ignored_not_naked(client):
+    """NAKing a stray byte would ask for a retransmit the device can't give."""
+    valve = attach(client, FakeValve())
+
+    await client._handle_incoming(bytes([protocol.HEADER_NOP]))
+
+    assert valve.written == []
+
+
 async def test_corrupt_data_packet_is_naked_and_ignored(client):
     valve = attach(client, FakeValve())
     packet = bytearray(protocol.build_data_packet({"dwh": 30}))

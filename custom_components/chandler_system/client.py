@@ -569,6 +569,11 @@ class ChandlerClient:
             self._resolve_ack(status)
         elif status is not None:
             _LOGGER.debug("Ignoring status packet %s", status.name)
+        elif len(data) <= 1:
+            # An undocumented status byte. NAKing it would ask the device to
+            # retransmit something it does not consider a data packet, so it
+            # is only logged.
+            _LOGGER.debug("Ignoring unrecognized byte %s", data.hex())
         else:
             await self._process_packet(data)
 
