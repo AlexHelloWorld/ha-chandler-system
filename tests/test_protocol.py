@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from custom_components.chandler_system import protocol
+from custom_components.chandler_system import crc16, protocol
 
 
 def test_status_packet_values():
@@ -38,19 +38,53 @@ def test_build_data_packet_shape():
     assert len(packet) == 1 + 9 + 2
 
 
-def test_build_data_packet_round_trips_through_receive_path():
-    """A packet we build must validate under the guide's receive algorithm.
+# Captured from hardware. The valve acknowledged this exact packet, and
+# rejected the same payload with the checksum bytes the other way round.
+ACCEPTED_BY_DEVICE = bytes.fromhex("c07b226473223a34357d9153")
+# Captured from hardware: a packet the valve itself transmitted.
+SENT_BY_DEVICE = bytes.fromhex("c07b22646d223a31387dd896")
 
-    This is the guard against a CRC byte-order mistake, which would otherwise
-    fail silently on the device as an ignored write.
-    """
-    payload = {"grn": 1}
-    packet = protocol.build_data_packet(payload)
 
-    header, body = protocol.parse_data_packet(packet)
+def test_build_data_packet_matches_what_the_device_accepted():
+    """Pins the outgoing checksum order against a packet the valve ACKed."""
+    assert protocol.build_data_packet({"ds": 45}) == ACCEPTED_BY_DEVICE
+
+
+def test_parse_data_packet_accepts_what_the_device_sent():
+    """Pins the incoming checksum order against a packet the valve sent."""
+    header, body = protocol.parse_data_packet(SENT_BY_DEVICE)
 
     assert header == protocol.HEADER_SINGLE_PACKET
-    assert json.loads(body) == payload
+    assert json.loads(body) == {"dm": 18}
+
+
+def test_the_two_directions_use_opposite_byte_order():
+    """The asymmetry is deliberate, not a bug waiting to be tidied away.
+
+    The device transmits its checksum little-endian but requires big-endian
+    on what it receives. Making the two directions agree -- the obvious
+    "cleanup" -- breaks every write.
+    """
+    checksum = crc16.compute(ACCEPTED_BY_DEVICE[:-2])
+    outgoing = ACCEPTED_BY_DEVICE[-2:]
+    assert outgoing == bytes([(checksum >> 8) & 0xFF, checksum & 0xFF])
+
+    checksum = crc16.compute(SENT_BY_DEVICE[:-2])
+    incoming = SENT_BY_DEVICE[-2:]
+    assert incoming == bytes([checksum & 0xFF, (checksum >> 8) & 0xFF])
+
+    assert outgoing[::-1] != outgoing  # the two orders are distinguishable here
+
+
+def test_a_packet_we_build_is_rejected_by_our_own_parser():
+    """Documents the consequence of the asymmetry.
+
+    Our parser implements the receive direction, so it will not validate a
+    packet built for the send direction. That is expected, and this test
+    exists so nobody "fixes" it.
+    """
+    with pytest.raises(protocol.PacketError, match="Checksum mismatch"):
+        protocol.parse_data_packet(protocol.build_data_packet({"ds": 45}))
 
 
 def test_parse_data_packet_rejects_corruption():
