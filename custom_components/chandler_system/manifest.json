@@ -10,7 +10,7 @@
   "issue_tracker": "https://github.com/AlexHelloWorld/ha-chandler-system/issues",
   "loggers": ["custom_components.chandler_system"],
   "requirements": ["bleak>=0.21.0", "bleak-retry-connector>=3.4.0"],
-  "version": "0.2.0",
+  "version": "0.2.0-probe",
   "bluetooth": [
     {
       "service_uuid": "8d53dc1d-1db7-4cd3-868b-8a527460aa84",
