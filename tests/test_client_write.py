@@ -4,13 +4,26 @@ import json
 
 import pytest
 
-from custom_components.chandler_system import protocol
+from custom_components.chandler_system import crc16, protocol
 from custom_components.chandler_system.client import (
     ChandlerClient,
     ChandlerWriteError,
     ConnectionState,
     DeviceData,
 )
+
+
+def device_packet(payload: dict) -> bytes:
+    """Frame a payload the way the device does, checksum little-endian.
+
+    Not the same as protocol.build_data_packet, which frames for the
+    opposite direction; see the note in protocol.parse_data_packet.
+    """
+    body = bytes([protocol.HEADER_SINGLE_PACKET]) + json.dumps(
+        payload, separators=(",", ":")
+    ).encode("utf-8")
+    checksum = crc16.compute(body)
+    return body + bytes([checksum & 0xFF, (checksum >> 8) & 0xFF])
 
 
 class FakeValve:
@@ -53,7 +66,7 @@ class FakeValve:
     def data_packets(self) -> list[dict]:
         """The JSON payloads of every data packet we received."""
         return [
-            json.loads(protocol.parse_data_packet(packet)[1])
+            json.loads(packet[1:-protocol.CRC_SIZE_BYTES])
             for packet in self.written
             if len(packet) > 1
         ]
@@ -185,7 +198,7 @@ async def test_timeout_query_is_answered(client):
 async def test_valid_data_packet_is_acked_and_parsed(client):
     valve = attach(client, FakeValve())
 
-    await client._handle_incoming(protocol.build_data_packet({"dwh": 30}))
+    await client._handle_incoming(device_packet({"dwh": 30}))
 
     assert valve.written == [bytes([protocol.PACKET_ACK])]
     assert client.data.water_hardness == 30
@@ -202,7 +215,7 @@ async def test_unrecognized_status_byte_is_ignored_not_naked(client):
 
 async def test_corrupt_data_packet_is_naked_and_ignored(client):
     valve = attach(client, FakeValve())
-    packet = bytearray(protocol.build_data_packet({"dwh": 30}))
+    packet = bytearray(device_packet({"dwh": 30}))
     packet[-1] ^= 0xFF
 
     await client._handle_incoming(bytes(packet))
@@ -246,7 +259,7 @@ async def test_authenticate_answers_keepalive_then_sends_token(client):
     client._auth_token = bytearray(b"\x01\x02\x03\x04")
     client._notification_queue.put_nowait(bytes([protocol.PACKET_MARCO]))
     client._notification_queue.put_nowait(bytes([protocol.PACKET_ACK]))
-    client._notification_queue.put_nowait(protocol.build_data_packet({"as": 2}))
+    client._notification_queue.put_nowait(device_packet({"as": 2}))
 
     assert await client._authenticate()
 
@@ -263,9 +276,9 @@ async def test_authenticate_acks_preauth_data(client):
     """Initial data arrives before the token and must be acknowledged."""
     valve = attach(client, FakeValve(reply=None))
     client._auth_token = bytearray(b"\x01")
-    client._notification_queue.put_nowait(protocol.build_data_packet({"dwh": 30}))
+    client._notification_queue.put_nowait(device_packet({"dwh": 30}))
     client._notification_queue.put_nowait(bytes([protocol.PACKET_ACK]))
-    client._notification_queue.put_nowait(protocol.build_data_packet({"as": 2}))
+    client._notification_queue.put_nowait(device_packet({"as": 2}))
 
     assert await client._authenticate()
 
@@ -278,7 +291,7 @@ async def test_authenticate_fails_when_token_is_rejected(client):
     attach(client, FakeValve(reply=None))
     client._auth_token = bytearray(b"\x01")
     client._notification_queue.put_nowait(bytes([protocol.PACKET_ACK]))
-    client._notification_queue.put_nowait(protocol.build_data_packet({"as": 1}))
+    client._notification_queue.put_nowait(device_packet({"as": 1}))
 
     assert not await client._authenticate()
     assert client._state is not ConnectionState.CONNECTED

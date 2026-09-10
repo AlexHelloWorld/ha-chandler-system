@@ -76,7 +76,8 @@ def build_data_packet(payload: dict[str, Any]) -> bytes:
     """Build a single data packet carrying a JSON payload.
 
     The checksum covers the header and the JSON, and is appended
-    little-endian.
+    big-endian -- the opposite order to the packets the device sends. See
+    the note above parse_data_packet.
     """
     body = bytes([HEADER_SINGLE_PACKET]) + json.dumps(
         payload, separators=(",", ":")
@@ -89,11 +90,19 @@ def build_data_packet(payload: dict[str, Any]) -> bytes:
         )
 
     checksum = crc16.compute(body)
-    return body + bytes([checksum & 0xFF, (checksum >> 8) & 0xFF])
+    return body + bytes([(checksum >> 8) & 0xFF, checksum & 0xFF])
 
 
 def parse_data_packet(data: bytes) -> tuple[int, bytes]:
     """Validate a received data packet and return its header and JSON bytes.
+
+    The device appends its checksum little-endian, which is the order the
+    vendor guide documents. It nevertheless requires the opposite order on
+    the packets we send it -- see build_data_packet. The asymmetry is
+    undocumented and was established by probing hardware: a payload framed
+    little-endian is answered with a NAK, and the identical payload framed
+    big-endian is acknowledged. Both directions are pinned by tests using
+    captured packets.
 
     Raises PacketError if the packet is too short or the checksum is bad; the
     caller should NAK so the device retransmits.
