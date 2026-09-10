@@ -65,3 +65,12 @@ sync_clock:
       selector:
         device:
           integration: chandler_system
+
+# TEMPORARY diagnostic; remove once the accepted write framing is known.
+probe_write_framing:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: chandler_system

@@ -145,6 +145,15 @@ class ChandlerDataUpdateCoordinator(DataUpdateCoordinator[DeviceData]):
                     f"Failed to send {payload} to the water system: {err}"
                 ) from err
 
+    async def async_probe_write_framing(self, payload: dict) -> list[str]:
+        """Run the temporary write-framing diagnostic. Delete with the probe."""
+        async with self._connection_lock:
+            try:
+                client = await self._async_ensure_connected()
+                return await client.async_probe_write_framing(payload)
+            except (UpdateFailed, ChandlerWriteError, PacketError) as err:
+                raise HomeAssistantError(f"Probe failed: {err}") from err
+
     async def async_disconnect(self) -> None:
         """Disconnect from the device."""
         async with self._connection_lock:

@@ -259,6 +259,16 @@
           "description": "The water system to update."
         }
       }
+    },
+    "probe_write_framing": {
+      "name": "Probe write framing (diagnostic)",
+      "description": "Temporary diagnostic. Writes the current seconds under each candidate checksum convention and reports which the valve accepts.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The water system to probe."
+        }
+      }
     }
   }
 }

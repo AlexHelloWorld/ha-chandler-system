@@ -361,14 +361,16 @@ class ChandlerClient:
                 ChandlerWriteError(f"Write abandoned because {reason}")
             )
 
-    async def _send_packet(self, data: bytes | bytearray) -> None:
+    async def _send_packet(
+        self, data: bytes | bytearray, response: bool = False
+    ) -> None:
         """Send a packet to the device."""
         if self._client is None or not self._client.is_connected:
             raise ChandlerWriteError("Bluetooth link is not connected")
 
         _LOGGER.debug("Sending: %s", data.hex())
         await self._client.write_gatt_char(
-            CHAR_UUID_WRITE, data, response=False
+            CHAR_UUID_WRITE, data, response=response
         )
 
     async def _wait_for_response(self, timeout: float = 5.0) -> bytes:
@@ -753,14 +755,80 @@ class ChandlerClient:
 
             raise ChandlerWriteError(f"Device rejected write {payload}")
 
+    async def async_probe_write_framing(
+        self, payload: dict[str, Any]
+    ) -> list[str]:
+        """Send one payload under each candidate framing and report replies.
+
+        TEMPORARY diagnostic. Packets framed exactly the way the device frames
+        its own are rejected, so what it expects inbound differs from what it
+        sends outbound. This finds out how. Delete once the answer is known.
+        """
+        if not self.is_connected:
+            raise ChandlerWriteError("Not connected to the device")
+
+        variants: list[tuple[str, bytes, bool]] = [
+            (
+                "crc(header+json) little-endian [current]",
+                protocol.build_data_packet_variant(payload),
+                False,
+            ),
+            (
+                "crc(header+json) big-endian",
+                protocol.build_data_packet_variant(payload, little_endian=False),
+                False,
+            ),
+            (
+                "crc(json only) little-endian",
+                protocol.build_data_packet_variant(payload, cover_header=False),
+                False,
+            ),
+            (
+                "crc(json only) big-endian",
+                protocol.build_data_packet_variant(
+                    payload, cover_header=False, little_endian=False
+                ),
+                False,
+            ),
+            (
+                "crc(header+json) little-endian, seed 0x0000",
+                protocol.build_data_packet_variant(payload, seed=0x0000),
+                False,
+            ),
+            (
+                "crc(header+json) little-endian, write-with-response",
+                protocol.build_data_packet_variant(payload),
+                True,
+            ),
+        ]
+
+        results = []
+        async with self._write_lock:
+            for name, packet, response in variants:
+                try:
+                    status = await self._send_and_await_ack(
+                        packet, payload, response=response
+                    )
+                    reply = status.name if status else "no reply"
+                except ChandlerWriteError as err:
+                    reply = f"no reply ({err})"
+
+                results.append(f"{reply:9} {packet.hex()}  {name}")
+                _LOGGER.warning("[probe] %s", results[-1])
+                # Let the link settle so a late reply is not read as the
+                # next variant's.
+                await asyncio.sleep(1.0)
+
+        return results
+
     async def _send_and_await_ack(
-        self, packet: bytes, payload: dict[str, Any]
+        self, packet: bytes, payload: dict[str, Any], response: bool = False
     ) -> StatusPacket | None:
         """Send a data packet and wait for the monitor loop to see an ACK."""
         loop = asyncio.get_running_loop()
         self._ack_waiter = loop.create_future()
         try:
-            await self._send_packet(packet)
+            await self._send_packet(packet, response=response)
             return await asyncio.wait_for(
                 self._ack_waiter, timeout=WRITE_ACK_TIMEOUT
             )

@@ -92,6 +92,34 @@ def build_data_packet(payload: dict[str, Any]) -> bytes:
     return body + bytes([checksum & 0xFF, (checksum >> 8) & 0xFF])
 
 
+def build_data_packet_variant(
+    payload: dict[str, Any],
+    *,
+    cover_header: bool = True,
+    little_endian: bool = True,
+    seed: int = crc16.DEFAULT_SEED,
+) -> bytes:
+    """Build a data packet under a chosen checksum convention.
+
+    TEMPORARY, for diagnosing which framing the valve accepts. The device
+    rejects packets built the way its own transmissions are framed, so the
+    conventions it uses inbound and outbound apparently differ. Delete this
+    along with the probe service once the answer is known.
+    """
+    body = bytes([HEADER_SINGLE_PACKET]) + json.dumps(
+        payload, separators=(",", ":")
+    ).encode("utf-8")
+
+    checksum = crc16.compute(body if cover_header else body[HEADER_SIZE_BYTES:], seed)
+
+    if little_endian:
+        trailer = bytes([checksum & 0xFF, (checksum >> 8) & 0xFF])
+    else:
+        trailer = bytes([(checksum >> 8) & 0xFF, checksum & 0xFF])
+
+    return body + trailer
+
+
 def parse_data_packet(data: bytes) -> tuple[int, bytes]:
     """Validate a received data packet and return its header and JSON bytes.
 

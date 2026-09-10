@@ -23,6 +23,8 @@ SERVICE_FIND_HOME = "find_home"
 SERVICE_SET_SALT_LEVEL = "set_salt_level"
 SERVICE_RESET_COUNTERS = "reset_counters"
 SERVICE_SYNC_CLOCK = "sync_clock"
+# TEMPORARY diagnostic; remove once the accepted write framing is known.
+SERVICE_PROBE_WRITE_FRAMING = "probe_write_framing"
 
 ATTR_DEVICE_ID = "device_id"
 ATTR_WHEN = "when"
@@ -69,6 +71,7 @@ RESET_COUNTERS_SCHEMA = vol.Schema(
 )
 
 SYNC_CLOCK_SCHEMA = vol.Schema(_TARGET_SCHEMA)
+PROBE_WRITE_FRAMING_SCHEMA = vol.Schema(_TARGET_SCHEMA)
 
 
 def _coordinator_for_device(
@@ -126,6 +129,20 @@ def async_setup_services(hass: HomeAssistant) -> None:
         now = dt_util.now()
         await _write(call, {"dh": now.hour, "dm": now.minute, "ds": now.second})
 
+    async def async_probe_write_framing(call: ServiceCall) -> None:
+        """Find which checksum convention the valve accepts on writes.
+
+        TEMPORARY diagnostic. Writes the current seconds, which is harmless
+        and never a no-op, under each candidate framing.
+        """
+        coordinator = _coordinator_for_device(hass, call.data[ATTR_DEVICE_ID])
+        results = await coordinator.async_probe_write_framing(
+            {"ds": dt_util.now().second}
+        )
+        raise HomeAssistantError(
+            "Write framing probe results (not an error):\n" + "\n".join(results)
+        )
+
     for service, handler, schema in (
         (
             SERVICE_START_REGENERATION,
@@ -136,6 +153,11 @@ def async_setup_services(hass: HomeAssistant) -> None:
         (SERVICE_SET_SALT_LEVEL, async_set_salt_level, SET_SALT_LEVEL_SCHEMA),
         (SERVICE_RESET_COUNTERS, async_reset_counters, RESET_COUNTERS_SCHEMA),
         (SERVICE_SYNC_CLOCK, async_sync_clock, SYNC_CLOCK_SCHEMA),
+        (
+            SERVICE_PROBE_WRITE_FRAMING,
+            async_probe_write_framing,
+            PROBE_WRITE_FRAMING_SCHEMA,
+        ),
     ):
         hass.services.async_register(DOMAIN, service, handler, schema=schema)
 
@@ -148,5 +170,6 @@ def async_unload_services(hass: HomeAssistant) -> None:
         SERVICE_SET_SALT_LEVEL,
         SERVICE_RESET_COUNTERS,
         SERVICE_SYNC_CLOCK,
+        SERVICE_PROBE_WRITE_FRAMING,
     ):
         hass.services.async_remove(DOMAIN, service)
