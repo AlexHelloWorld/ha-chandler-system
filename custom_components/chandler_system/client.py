@@ -29,6 +29,11 @@ _LOGGER = logging.getLogger(__name__)
 WRITE_ACK_TIMEOUT = 5.0
 # Overall budget for the handshake, which spans several device round trips.
 AUTH_TIMEOUT = 30.0
+# How long the monitor loop waits on an idle link before checking it is alive.
+# Bleak reports a drop directly, so this is only a backstop.
+MONITOR_IDLE_TIMEOUT = 30.0
+# Queued to wake the monitor loop when it should re-check whether to stop.
+WAKE_SENTINEL = b""
 # The device needs a moment to close the link after a reset command.
 DEVICE_RESET_DELAY = 0.15
 
@@ -313,18 +318,58 @@ class ChandlerClient:
         """Get the device address."""
         return self._ble_device.address
 
-    def _notification_callback(self, sender: Any, data: bytes) -> None:
-        """Handle incoming BLE notifications."""
-        _LOGGER.debug("Received: %s", data.hex())
-        self._notification_queue.put_nowait(data)
+    def _make_notification_callback(
+        self, queue: asyncio.Queue[bytes]
+    ) -> Callable[[Any, bytes], None]:
+        """Build a notification handler bound to one connection's queue.
+
+        The queue is captured rather than read from the instance so that a
+        link we have already replaced cannot deliver into the current
+        session; its notifications land in a queue nobody reads.
+        """
+
+        def handle(sender: Any, data: bytes) -> None:
+            _LOGGER.debug("Received: %s", data.hex())
+            queue.put_nowait(data)
+
+        return handle
+
+    def _on_disconnected(self, client: BleakClient) -> None:
+        """Handle the link dropping, as reported by Bleak.
+
+        Without this the loss is only noticed once the monitor loop's idle
+        timer expires, which leaves the client claiming to be connected for
+        up to that long and blocks reconnection for the same period.
+        """
+        if client is not self._client:
+            # A link we already replaced; its teardown is not our concern.
+            return
+
+        _LOGGER.info("Bluetooth link dropped")
+        self._state = ConnectionState.DISCONNECTED
+        self._fail_pending_ack("the connection dropped")
+        self._stop_event.set()
+        # The monitor loop is parked on the queue; wake it so it can exit
+        # now rather than when its idle timer expires.
+        self._notification_queue.put_nowait(WAKE_SENTINEL)
+
+    def _fail_pending_ack(self, reason: str) -> None:
+        """Fail a write that is waiting on an acknowledgement."""
+        waiter = self._ack_waiter
+        if waiter is not None and not waiter.done():
+            waiter.set_exception(
+                ChandlerWriteError(f"Write abandoned because {reason}")
+            )
 
     async def _send_packet(self, data: bytes | bytearray) -> None:
         """Send a packet to the device."""
-        if self._client and self._client.is_connected:
-            _LOGGER.debug("Sending: %s", data.hex())
-            await self._client.write_gatt_char(
-                CHAR_UUID_WRITE, data, response=False
-            )
+        if self._client is None or not self._client.is_connected:
+            raise ChandlerWriteError("Bluetooth link is not connected")
+
+        _LOGGER.debug("Sending: %s", data.hex())
+        await self._client.write_gatt_char(
+            CHAR_UUID_WRITE, data, response=False
+        )
 
     async def _wait_for_response(self, timeout: float = 5.0) -> bytes:
         """Wait for a response from the device."""
@@ -596,45 +641,49 @@ class ChandlerClient:
     async def _monitor_loop(self) -> None:
         """Monitor loop to handle incoming packets."""
         _LOGGER.debug("Starting monitor loop")
-        while not self._stop_event.is_set():
-            try:
-                data = await asyncio.wait_for(
-                    self._notification_queue.get(),
-                    timeout=30.0,
-                )
+        queue = self._notification_queue
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    data = await asyncio.wait_for(
+                        queue.get(), timeout=MONITOR_IDLE_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    # Bleak normally reports a drop directly; this only
+                    # catches a link that died without one.
+                    if self._client and not self._client.is_connected:
+                        _LOGGER.warning("Connection lost during monitor")
+                        break
+                    continue
+
+                if self._stop_event.is_set():
+                    break
+                if data == WAKE_SENTINEL:
+                    continue
+
                 await self._handle_incoming(data)
 
-            except asyncio.TimeoutError:
-                # Connection might be stale, but don't break
-                _LOGGER.debug("Monitor loop timeout - checking connection")
-                if self._client and not self._client.is_connected:
-                    _LOGGER.warning("Connection lost during monitor")
-                    break
-                continue
-            except asyncio.CancelledError:
-                _LOGGER.debug("Monitor loop cancelled")
-                break
-            except Exception as e:
-                _LOGGER.exception("Error in monitor loop: %s", e)
-                break
-
-        _LOGGER.debug("Monitor loop ended")
-        self._state = ConnectionState.DISCONNECTED
+        except asyncio.CancelledError:
+            _LOGGER.debug("Monitor loop cancelled")
+        except Exception as err:
+            _LOGGER.exception("Error in monitor loop: %s", err)
+        finally:
+            _LOGGER.debug("Monitor loop ended")
+            self._state = ConnectionState.DISCONNECTED
+            self._fail_pending_ack("the monitor loop stopped")
 
     async def connect(self) -> bool:
         """Connect to the device and authenticate.
 
         Uses bleak-retry-connector for reliable connection establishment.
         """
-        if self._state != ConnectionState.DISCONNECTED:
-            _LOGGER.warning("Already connected or connecting")
-            return self.is_connected
+        # Release any previous link first. A half-open connection keeps state
+        # in the Bluetooth stack that makes the next attempt fail, and callers
+        # only reach here because they already found us disconnected.
+        await self._teardown()
 
         self._state = ConnectionState.CONNECTING
         self._stop_event.clear()
-
-        # Anything left from a previous session would be read as a response to
-        # this session's handshake.
         self._reset_session_state()
 
         try:
@@ -648,18 +697,20 @@ class ChandlerClient:
                 BleakClient,
                 self._ble_device,
                 self._ble_device.address,
+                disconnected_callback=self._on_disconnected,
                 max_attempts=3,
             )
             _LOGGER.info("BLE connection established")
 
-            # Start notifications
+            # Start notifications, bound to this session's queue
             await self._client.start_notify(
-                CHAR_UUID_READ, self._notification_callback
+                CHAR_UUID_READ,
+                self._make_notification_callback(self._notification_queue),
             )
 
             # Authenticate
             if not await self._authenticate():
-                await self.disconnect()
+                await self._teardown(graceful=True)
                 return False
 
             # Start monitor loop
@@ -667,9 +718,10 @@ class ChandlerClient:
 
             return True
 
-        except Exception as e:
-            _LOGGER.error("Failed to connect: %s", e)
-            self._state = ConnectionState.DISCONNECTED
+        except Exception as err:
+            _LOGGER.error("Failed to connect: %s", err)
+            # Leaving a half-open link behind would block the next attempt.
+            await self._teardown()
             return False
 
     async def async_write_keys(self, payload: dict[str, Any]) -> None:
@@ -723,9 +775,13 @@ class ChandlerClient:
             self._ack_waiter = None
 
     def _reset_session_state(self) -> None:
-        """Drop anything carried over from a previous connection."""
-        while not self._notification_queue.empty():
-            self._notification_queue.get_nowait()
+        """Drop anything carried over from a previous connection.
+
+        The queue is replaced rather than drained: a notification callback
+        from a superseded link holds a reference to the old queue, so emptying
+        it in place would still leave that link feeding this session.
+        """
+        self._notification_queue = asyncio.Queue()
         self._data_buffer.clear()
         self._unmatched_acks = 0
         self._ack_waiter = None
@@ -744,12 +800,34 @@ class ChandlerClient:
         except Exception as err:
             _LOGGER.debug("Device reset command failed: %s", err)
 
+    async def _teardown(self, *, graceful: bool = False) -> None:
+        """Release the Bluetooth link and forget this session.
+
+        Safe to call in any state, including when nothing is connected. Every
+        path that ends a connection goes through here so the Bluetooth stack
+        is never left holding a half-open link.
+        """
+        client = self._client
+        if client is not None:
+            try:
+                if client.is_connected:
+                    if graceful:
+                        await self._send_device_reset()
+                    await client.stop_notify(CHAR_UUID_READ)
+                    await client.disconnect()
+            except Exception as err:
+                _LOGGER.debug("Error releasing the Bluetooth link: %s", err)
+            finally:
+                self._client = None
+
+        self._state = ConnectionState.DISCONNECTED
+        self._fail_pending_ack("the connection closed")
+
     async def disconnect(self) -> None:
         """Disconnect from the device."""
         _LOGGER.info("Disconnecting from device")
         self._stop_event.set()
 
-        # Cancel monitor task
         if self._monitor_task:
             self._monitor_task.cancel()
             try:
@@ -758,22 +836,15 @@ class ChandlerClient:
                 pass
             self._monitor_task = None
 
-        # Drain remaining packets from queue
+        # Process anything already received before dropping the link.
         while not self._notification_queue.empty():
             data = self._notification_queue.get_nowait()
-            await self._handle_incoming(data)
-
-        # Disconnect BLE client
-        if self._client:
+            if data == WAKE_SENTINEL:
+                continue
             try:
-                if self._client.is_connected:
-                    await self._send_device_reset()
-                    await self._client.stop_notify(CHAR_UUID_READ)
-                    await self._client.disconnect()
-            except Exception as e:
-                _LOGGER.debug("Error during disconnect: %s", e)
-            finally:
-                self._client = None
+                await self._handle_incoming(data)
+            except Exception as err:
+                _LOGGER.debug("Error draining packet during disconnect: %s", err)
 
-        self._state = ConnectionState.DISCONNECTED
+        await self._teardown(graceful=True)
         _LOGGER.info("Disconnected")
