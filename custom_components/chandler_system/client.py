@@ -289,7 +289,6 @@ class ChandlerClient:
         self._monitor_task: asyncio.Task | None = None
         self._write_lock = asyncio.Lock()
         self._ack_waiter: asyncio.Future[StatusPacket] | None = None
-        self._unmatched_acks = 0
 
     def set_ble_device(self, ble_device: BLEDevice) -> None:
         """Update the BLE device (address may change on different hosts)."""
@@ -632,15 +631,11 @@ class ChandlerClient:
     def _resolve_ack(self, status: StatusPacket) -> None:
         """Hand an ACK/NAK to a write that is waiting on one.
 
-        A write that timed out may still have an acknowledgement in flight.
-        Because the link delivers in order, that straggler is the next one we
-        see, so it is discarded rather than allowed to satisfy a later write.
+        Nothing in a status packet says which write it answers, so this
+        relies on there being at most one unanswered write per session --
+        which async_write_keys guarantees by ending the session whenever a
+        write goes unanswered.
         """
-        if self._unmatched_acks > 0:
-            self._unmatched_acks -= 1
-            _LOGGER.debug("Discarding late %s from a timed-out write", status.name)
-            return
-
         waiter = self._ack_waiter
         if waiter is not None and not waiter.done():
             waiter.set_result(status)
@@ -748,7 +743,15 @@ class ChandlerClient:
             # One retry: a NAK means the device saw a malformed packet, which
             # a straight resend usually clears.
             for attempt in range(2):
-                status = await self._send_and_await_ack(packet, payload)
+                try:
+                    status = await self._send_and_await_ack(packet, payload)
+                except ChandlerWriteError:
+                    # An unanswered write leaves the session ambiguous: an
+                    # acknowledgement may still be in flight, and nothing in a
+                    # status packet distinguishes it from the next write's. The
+                    # session is dropped so the next one starts clean.
+                    await self._teardown()
+                    raise
 
                 if status is StatusPacket.ACK:
                     return
@@ -773,9 +776,6 @@ class ChandlerClient:
                 self._ack_waiter, timeout=WRITE_ACK_TIMEOUT
             )
         except asyncio.TimeoutError as err:
-            # The acknowledgement may still be on its way; make sure it does
-            # not get mistaken for the next write's.
-            self._unmatched_acks += 1
             raise ChandlerWriteError(
                 f"Timed out waiting for the device to acknowledge {payload}"
             ) from err
@@ -791,7 +791,6 @@ class ChandlerClient:
         """
         self._notification_queue = asyncio.Queue()
         self._data_buffer.clear()
-        self._unmatched_acks = 0
         self._ack_waiter = None
 
     async def _send_device_reset(self) -> None:

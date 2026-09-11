@@ -53,7 +53,6 @@ def client():
     instance._notification_queue = asyncio.Queue()
     instance._write_lock = asyncio.Lock()
     instance._ack_waiter = None
-    instance._unmatched_acks = 0
     instance._state = ConnectionState.DISCONNECTED
     instance._monitor_task = None
     instance._client = None

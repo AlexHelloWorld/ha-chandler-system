@@ -82,7 +82,6 @@ def client():
     instance._notification_queue = asyncio.Queue()
     instance._write_lock = asyncio.Lock()
     instance._ack_waiter = None
-    instance._unmatched_acks = 0
     instance._state = ConnectionState.CONNECTED
     instance._monitor_task = None
     return instance
@@ -139,25 +138,56 @@ async def test_write_succeeds_on_second_attempt_after_nak(client):
     assert valve.data_packets == [{"dwh": 25}, {"dwh": 25}]
 
 
-async def test_late_ack_does_not_satisfy_the_next_write(client, monkeypatch):
-    """A timed-out write's straggling ACK must not succeed a later write."""
+async def test_an_unanswered_write_ends_the_session(client, monkeypatch):
+    """A straggling acknowledgement must not be able to reach a later write.
+
+    Nothing in a status packet identifies which write it answers, so the only
+    sound way to keep them apart is to make sure two writes never share a
+    session once one has gone unanswered.
+    """
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.WRITE_ACK_TIMEOUT", 0.01
+    )
+    valve = attach(client, FakeValve(reply=None))
+
+    with pytest.raises(ChandlerWriteError, match="Timed out"):
+        await client.async_write_keys({"dwh": 25})
+
+    assert client._client is None
+    assert client._state is ConnectionState.DISCONNECTED
+    assert not valve.is_connected
+
+    # A later write cannot run on the poisoned session at all.
+    with pytest.raises(ChandlerWriteError, match="Not connected"):
+        await client.async_write_keys({"grn": 1})
+
+
+async def test_a_write_the_device_never_answers_does_not_poison_later_ones(
+    client, monkeypatch
+):
+    """The previous guard was a counter, which assumed every timeout meant a
+    reply was still in flight. When the device simply never answered, the
+    count never cleared and every later write had its own acknowledgement
+    discarded -- permanently, for the life of the session."""
     monkeypatch.setattr(
         "custom_components.chandler_system.client.WRITE_ACK_TIMEOUT", 0.01
     )
     attach(client, FakeValve(reply=None))
 
-    with pytest.raises(ChandlerWriteError, match="Timed out"):
-        await client.async_write_keys({"dwh": 25})
+    with pytest.raises(ChandlerWriteError):
+        await client.async_write_keys({"dwh": 20})
 
-    # The first write's acknowledgement finally shows up.
-    client._notification_queue.put_nowait(bytes([protocol.PACKET_ACK]))
+    # A fresh session, as the coordinator would establish after the failure.
+    attach(client, FakeValve(reply=protocol.PACKET_ACK))
+    client._state = ConnectionState.CONNECTED
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.WRITE_ACK_TIMEOUT", 5.0
+    )
 
-    second = asyncio.create_task(client.async_write_keys({"grn": 1}))
+    write = asyncio.create_task(client.async_write_keys({"dwh": 21}))
     await asyncio.sleep(0)
     await pump(client)
-
-    with pytest.raises(ChandlerWriteError, match="Timed out"):
-        await second
+    await write
 
 
 async def test_write_raises_when_not_connected(client):
