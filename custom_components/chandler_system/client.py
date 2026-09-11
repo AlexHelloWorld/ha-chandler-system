@@ -29,11 +29,13 @@ _LOGGER = logging.getLogger(__name__)
 WRITE_ACK_TIMEOUT = 5.0
 # Overall budget for the handshake, which spans several device round trips.
 AUTH_TIMEOUT = 30.0
+# How long to wait for any single reply during the handshake. Capped well
+# below the overall budget so a silent device is abandoned promptly rather
+# than holding the connection lock for the whole of it.
+AUTH_REPLY_TIMEOUT = 10.0
 # How long the monitor loop waits on an idle link before checking it is alive.
 # Bleak reports a drop directly, so this is only a backstop.
 MONITOR_IDLE_TIMEOUT = 30.0
-# Queued to wake the monitor loop when it should re-check whether to stop.
-WAKE_SENTINEL = b""
 # The device needs a moment to close the link after a reset command.
 DEVICE_RESET_DELAY = 0.15
 
@@ -285,7 +287,6 @@ class ChandlerClient:
         self._data_buffer = bytearray()
         self._data = DeviceData()
         self._monitor_task: asyncio.Task | None = None
-        self._stop_event = asyncio.Event()
         self._write_lock = asyncio.Lock()
         self._ack_waiter: asyncio.Future[StatusPacket] | None = None
         self._unmatched_acks = 0
@@ -346,15 +347,15 @@ class ChandlerClient:
             return
 
         _LOGGER.info("Bluetooth link dropped")
-        self._state = ConnectionState.DISCONNECTED
-        self._fail_pending_ack("the connection dropped")
-        self._stop_event.set()
-        # The monitor loop is parked on the queue; wake it so it can exit
-        # now rather than when its idle timer expires.
-        self._notification_queue.put_nowait(WAKE_SENTINEL)
+        self._mark_disconnected("the connection dropped")
+        # Cancelled rather than awaited: this runs synchronously from Bleak,
+        # so the loop unwinds on the next pass of the event loop.
+        if self._monitor_task is not None:
+            self._monitor_task.cancel()
 
-    def _fail_pending_ack(self, reason: str) -> None:
-        """Fail a write that is waiting on an acknowledgement."""
+    def _mark_disconnected(self, reason: str) -> None:
+        """Record that the session has ended and fail anything waiting on it."""
+        self._state = ConnectionState.DISCONNECTED
         waiter = self._ack_waiter
         if waiter is not None and not waiter.done():
             waiter.set_exception(
@@ -407,9 +408,15 @@ class ChandlerClient:
                 return False
 
             try:
-                data = await self._wait_for_response(timeout=remaining)
+                data = await self._wait_for_response(
+                    timeout=min(remaining, AUTH_REPLY_TIMEOUT)
+                )
             except asyncio.TimeoutError:
-                _LOGGER.error("Authentication timeout")
+                _LOGGER.error(
+                    "No reply from the device during authentication "
+                    "(waited %ss)",
+                    AUTH_REPLY_TIMEOUT,
+                )
                 return False
 
             if not token_sent and protocol.classify_status(data) is StatusPacket.ACK:
@@ -641,9 +648,11 @@ class ChandlerClient:
     async def _monitor_loop(self) -> None:
         """Monitor loop to handle incoming packets."""
         _LOGGER.debug("Starting monitor loop")
+        # Captured so a loop outliving its session cannot read the next one's
+        # traffic.
         queue = self._notification_queue
         try:
-            while not self._stop_event.is_set():
+            while True:
                 try:
                     data = await asyncio.wait_for(
                         queue.get(), timeout=MONITOR_IDLE_TIMEOUT
@@ -656,11 +665,6 @@ class ChandlerClient:
                         break
                     continue
 
-                if self._stop_event.is_set():
-                    break
-                if data == WAKE_SENTINEL:
-                    continue
-
                 await self._handle_incoming(data)
 
         except asyncio.CancelledError:
@@ -669,8 +673,7 @@ class ChandlerClient:
             _LOGGER.exception("Error in monitor loop: %s", err)
         finally:
             _LOGGER.debug("Monitor loop ended")
-            self._state = ConnectionState.DISCONNECTED
-            self._fail_pending_ack("the monitor loop stopped")
+            self._mark_disconnected("the monitor loop stopped")
 
     async def connect(self) -> bool:
         """Connect to the device and authenticate.
@@ -713,14 +716,12 @@ class ChandlerClient:
                 return False
 
             # The handshake spans several round trips, so the link may have
-            # dropped during it -- which sets the stop event and would retire
-            # the monitor loop the moment it started.
+            # dropped during it.
             if not self._client.is_connected:
                 _LOGGER.warning("Link dropped during the handshake")
                 await self._teardown()
                 return False
 
-            self._stop_event.clear()
             self._monitor_task = asyncio.create_task(self._monitor_loop())
 
             return True
@@ -831,7 +832,6 @@ class ChandlerClient:
         is never left holding a half-open link, and no monitor loop outlives
         the connection it was started for.
         """
-        self._stop_event.set()
         await self._cancel_monitor_task()
 
         client = self._client
@@ -854,26 +854,10 @@ class ChandlerClient:
         finally:
             self._client = None
 
-        self._state = ConnectionState.DISCONNECTED
-        self._fail_pending_ack("the connection closed")
+        self._mark_disconnected("the connection closed")
 
     async def disconnect(self) -> None:
         """Disconnect from the device."""
         _LOGGER.info("Disconnecting from device")
-        self._stop_event.set()
-        # Stopped before the drain so the loop cannot consume the packets
-        # this is about to process.
-        await self._cancel_monitor_task()
-
-        # Process anything already received before dropping the link.
-        while not self._notification_queue.empty():
-            data = self._notification_queue.get_nowait()
-            if data == WAKE_SENTINEL:
-                continue
-            try:
-                await self._handle_incoming(data)
-            except Exception as err:
-                _LOGGER.debug("Error draining packet during disconnect: %s", err)
-
         await self._teardown(graceful=True)
         _LOGGER.info("Disconnected")

@@ -84,7 +84,6 @@ def client():
     instance._ack_waiter = None
     instance._unmatched_acks = 0
     instance._state = ConnectionState.CONNECTED
-    instance._stop_event = asyncio.Event()
     instance._monitor_task = None
     return instance
 

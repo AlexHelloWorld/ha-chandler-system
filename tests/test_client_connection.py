@@ -55,7 +55,6 @@ def client():
     instance._ack_waiter = None
     instance._unmatched_acks = 0
     instance._state = ConnectionState.DISCONNECTED
-    instance._stop_event = asyncio.Event()
     instance._monitor_task = None
     instance._client = None
     instance._ble_device = FakeBLEDevice()
@@ -205,13 +204,11 @@ async def test_teardown_releases_the_link_even_if_unsubscribing_fails(client):
 
 
 async def test_link_dropping_during_the_handshake_fails_the_connect(client):
-    """The drop sets the stop event, which would retire the new monitor loop
-    the instant it started."""
+    """Starting a monitor loop over a dead link would report a live session."""
     dropping = FakeBleakClient()
 
     async def authenticate_then_drop(self):
         dropping.is_connected = False
-        self._stop_event.set()
         return True
 
     with patch(
@@ -235,16 +232,20 @@ async def test_teardown_is_safe_with_nothing_connected(client):
     assert client._state is ConnectionState.DISCONNECTED
 
 
-async def test_disconnect_callback_marks_disconnected_and_wakes_loop(client):
+async def test_disconnect_callback_stops_the_monitor_loop(client):
     live = FakeBleakClient()
     client._client = live
     client._state = ConnectionState.CONNECTED
+    client._monitor_task = asyncio.create_task(client._monitor_loop())
+    await asyncio.sleep(0)
 
     client._on_disconnected(live)
 
     assert client._state is ConnectionState.DISCONNECTED
-    assert client._stop_event.is_set()
-    assert not client._notification_queue.empty()
+    # Cancellation is requested synchronously but only takes effect once the
+    # loop next runs.
+    await asyncio.sleep(0)
+    assert client._monitor_task.done()
 
 
 async def test_disconnect_callback_ignores_a_superseded_link(client):
@@ -253,10 +254,16 @@ async def test_disconnect_callback_ignores_a_superseded_link(client):
     client._client = current
     client._state = ConnectionState.CONNECTED
 
+    client._monitor_task = asyncio.create_task(client._monitor_loop())
+    await asyncio.sleep(0)
+
     client._on_disconnected(FakeBleakClient())
+    await asyncio.sleep(0)
 
     assert client._state is ConnectionState.CONNECTED
-    assert not client._stop_event.is_set()
+    assert not client._monitor_task.done()
+
+    await client._cancel_monitor_task()
 
 
 async def test_disconnect_callback_fails_a_pending_write(client):
@@ -280,8 +287,9 @@ async def test_monitor_loop_exit_fails_a_pending_write(client):
     waiter = asyncio.get_running_loop().create_future()
     client._ack_waiter = waiter
 
-    client._stop_event.set()
-    await client._monitor_loop()
+    client._monitor_task = asyncio.create_task(client._monitor_loop())
+    await asyncio.sleep(0)
+    await client._cancel_monitor_task()
 
     assert waiter.done()
     with pytest.raises(ChandlerWriteError):
