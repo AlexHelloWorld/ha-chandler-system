@@ -406,15 +406,14 @@ class ChandlerClient:
                 )
                 return False
 
+            wait = min(remaining, AUTH_REPLY_TIMEOUT)
             try:
-                data = await self._wait_for_response(
-                    timeout=min(remaining, AUTH_REPLY_TIMEOUT)
-                )
+                data = await self._wait_for_response(timeout=wait)
             except asyncio.TimeoutError:
                 _LOGGER.error(
                     "No reply from the device during authentication "
-                    "(waited %ss)",
-                    AUTH_REPLY_TIMEOUT,
+                    "(waited %.1fs)",
+                    wait,
                 )
                 return False
 
@@ -677,8 +676,10 @@ class ChandlerClient:
         """
         # Release any previous link first. A half-open connection keeps state
         # in the Bluetooth stack that makes the next attempt fail, and callers
-        # only reach here because they already found us disconnected.
-        await self._teardown()
+        # only reach here because they already found us disconnected. Released
+        # gracefully: if that link is somehow still up, the valve has to be
+        # told to let go or it holds the slot this connect is about to need.
+        await self._teardown(graceful=True)
 
         self._state = ConnectionState.CONNECTING
         self._reset_session_state()
@@ -759,6 +760,13 @@ class ChandlerClient:
                     # session is dropped so the next one starts clean.
                     await self._teardown()
                     raise
+                except Exception as err:
+                    # A transport failure mid-write leaves the same ambiguity,
+                    # and would otherwise surface as a bare traceback.
+                    await self._teardown()
+                    raise ChandlerWriteError(
+                        f"Failed to send {payload}: {err}"
+                    ) from err
 
                 if status is StatusPacket.ACK:
                     return
@@ -825,10 +833,16 @@ class ChandlerClient:
             return
 
         task.cancel()
+        current = asyncio.current_task()
         try:
             await task
         except asyncio.CancelledError:
-            pass
+            # Only the monitor task's cancellation is ours to absorb. If this
+            # caller is itself being cancelled -- Home Assistant shutting down
+            # mid-connect, say -- swallowing it here would let the rest of the
+            # connect run and open a link nobody is going to close.
+            if current is not None and current.cancelling() > 0:
+                raise
 
     async def _teardown(self, *, graceful: bool = False) -> None:
         """Release the Bluetooth link and forget this session.

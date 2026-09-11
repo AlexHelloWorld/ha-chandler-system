@@ -3,6 +3,7 @@ import asyncio
 from unittest.mock import patch
 
 import pytest
+from bleak.exc import BleakError
 
 from custom_components.chandler_system import protocol
 from custom_components.chandler_system.client import (
@@ -222,6 +223,38 @@ async def test_link_dropping_during_the_handshake_fails_the_connect(client):
 
 async def _raise_busy(_char):
     raise RuntimeError("BlueZ is busy")
+
+
+async def test_connect_asks_a_live_previous_link_to_release(client):
+    """A link still up has to be told to let go.
+
+    The valve holds the connection well past our disconnect otherwise, which
+    blocks the very attempt this teardown is clearing the way for.
+    """
+    stale = FakeBleakClient(connected=True)
+    client._client = stale
+    client._state = ConnectionState.CONNECTED
+
+    await _connect(client, FakeBleakClient())
+
+    assert bytes([protocol.PACKET_DEVICE_RESET]) in stale.written
+
+
+async def test_transport_failure_mid_write_ends_the_session(client):
+    """A write that fails in the transport is as ambiguous as one that goes
+    unanswered, and must not leave the session looking healthy."""
+    class FailingWrite(FakeBleakClient):
+        async def write_gatt_char(self, _char, data, response=False):
+            raise BleakError("link went away mid-write")
+
+    client._client = FailingWrite()
+    client._state = ConnectionState.CONNECTED
+
+    with pytest.raises(ChandlerWriteError, match="Failed to send"):
+        await client.async_write_keys({"dwh": 25})
+
+    assert client._client is None
+    assert client._state is ConnectionState.DISCONNECTED
 
 
 async def test_teardown_is_safe_with_nothing_connected(client):
