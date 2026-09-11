@@ -733,6 +733,13 @@ class ChandlerClient:
         The device silently ignores keys it does not accept and writes that
         match its current value, so an ACK confirms delivery only -- not that
         anything changed.
+
+        Writes must stay serial. A status packet is a single byte with nothing
+        in it to say which write it answers, so the reply can only be matched
+        by there being just one outstanding at a time. Sending a second packet
+        before the first is answered -- to batch settings, or to save a round
+        trip -- would make the two replies indistinguishable, and the protocol
+        offers no way to tell them apart.
         """
         if not self.is_connected:
             raise ChandlerWriteError("Not connected to the device")
