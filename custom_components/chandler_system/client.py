@@ -683,7 +683,6 @@ class ChandlerClient:
         await self._teardown()
 
         self._state = ConnectionState.CONNECTING
-        self._stop_event.clear()
         self._reset_session_state()
 
         try:
@@ -713,7 +712,15 @@ class ChandlerClient:
                 await self._teardown(graceful=True)
                 return False
 
-            # Start monitor loop
+            # The handshake spans several round trips, so the link may have
+            # dropped during it -- which sets the stop event and would retire
+            # the monitor loop the moment it started.
+            if not self._client.is_connected:
+                _LOGGER.warning("Link dropped during the handshake")
+                await self._teardown()
+                return False
+
+            self._stop_event.clear()
             self._monitor_task = asyncio.create_task(self._monitor_loop())
 
             return True
@@ -800,25 +807,52 @@ class ChandlerClient:
         except Exception as err:
             _LOGGER.debug("Device reset command failed: %s", err)
 
+    async def _cancel_monitor_task(self) -> None:
+        """Stop the monitor loop and wait for it to unwind.
+
+        Must not be called from the monitor loop itself, which would wait on
+        its own completion.
+        """
+        task, self._monitor_task = self._monitor_task, None
+        if task is None or task.done():
+            return
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
     async def _teardown(self, *, graceful: bool = False) -> None:
         """Release the Bluetooth link and forget this session.
 
         Safe to call in any state, including when nothing is connected. Every
         path that ends a connection goes through here so the Bluetooth stack
-        is never left holding a half-open link.
+        is never left holding a half-open link, and no monitor loop outlives
+        the connection it was started for.
         """
+        self._stop_event.set()
+        await self._cancel_monitor_task()
+
         client = self._client
-        if client is not None:
-            try:
-                if client.is_connected:
-                    if graceful:
-                        await self._send_device_reset()
+        try:
+            if client is not None and client.is_connected:
+                # Sent before the reference is dropped, since it goes out
+                # over this same client.
+                if graceful:
+                    await self._send_device_reset()
+                # Released in separate steps: failing to unsubscribe must not
+                # leave the link itself open.
+                try:
                     await client.stop_notify(CHAR_UUID_READ)
+                except Exception as err:
+                    _LOGGER.debug("Error unsubscribing: %s", err)
+                try:
                     await client.disconnect()
-            except Exception as err:
-                _LOGGER.debug("Error releasing the Bluetooth link: %s", err)
-            finally:
-                self._client = None
+                except Exception as err:
+                    _LOGGER.debug("Error releasing the Bluetooth link: %s", err)
+        finally:
+            self._client = None
 
         self._state = ConnectionState.DISCONNECTED
         self._fail_pending_ack("the connection closed")
@@ -827,14 +861,9 @@ class ChandlerClient:
         """Disconnect from the device."""
         _LOGGER.info("Disconnecting from device")
         self._stop_event.set()
-
-        if self._monitor_task:
-            self._monitor_task.cancel()
-            try:
-                await self._monitor_task
-            except asyncio.CancelledError:
-                pass
-            self._monitor_task = None
+        # Stopped before the drain so the loop cannot consume the packets
+        # this is about to process.
+        await self._cancel_monitor_task()
 
         # Process anything already received before dropping the link.
         while not self._notification_queue.empty():

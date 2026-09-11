@@ -161,6 +161,73 @@ async def test_failed_connect_leaves_no_link_behind(client):
     assert client._state is ConnectionState.DISCONNECTED
 
 
+async def test_reconnecting_does_not_leave_monitor_loops_behind(client):
+    """Each connection must retire the previous connection's monitor loop.
+
+    An orphan keeps reading the old queue forever while still touching shared
+    state, so it can mark the live session disconnected or fail one of its
+    writes.
+    """
+    def monitor_loops():
+        # Matched on qualified name: a substring test would also match this
+        # test's own task, whose name contains "monitor_loop".
+        return [
+            task
+            for task in asyncio.all_tasks()
+            if getattr(task.get_coro(), "__qualname__", None)
+            == "ChandlerClient._monitor_loop"
+        ]
+
+    for _ in range(3):
+        establish, authenticate = patch_connect(FakeBleakClient())
+        with establish, authenticate:
+            await client.connect()
+        await asyncio.sleep(0)
+
+    assert len(monitor_loops()) == 1
+
+    await client.disconnect()
+    assert monitor_loops() == []
+
+
+async def test_teardown_releases_the_link_even_if_unsubscribing_fails(client):
+    """Skipping disconnect() would strand exactly the half-open link this
+    teardown exists to prevent."""
+    stubborn = FakeBleakClient()
+    stubborn.stop_notify = _raise_busy
+    client._client = stubborn
+
+    await client._teardown()
+
+    assert stubborn.disconnect_calls == 1
+    assert not stubborn.is_connected
+    assert client._client is None
+
+
+async def test_link_dropping_during_the_handshake_fails_the_connect(client):
+    """The drop sets the stop event, which would retire the new monitor loop
+    the instant it started."""
+    dropping = FakeBleakClient()
+
+    async def authenticate_then_drop(self):
+        dropping.is_connected = False
+        self._stop_event.set()
+        return True
+
+    with patch(
+        "custom_components.chandler_system.client.establish_connection",
+        return_value=dropping,
+    ), patch.object(ChandlerClient, "_authenticate", authenticate_then_drop):
+        assert await client.connect() is False
+
+    assert client._client is None
+    assert client._monitor_task is None
+
+
+async def _raise_busy(_char):
+    raise RuntimeError("BlueZ is busy")
+
+
 async def test_teardown_is_safe_with_nothing_connected(client):
     await client._teardown()
 
