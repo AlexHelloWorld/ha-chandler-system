@@ -76,17 +76,11 @@
       "regen_counter": {
         "name": "Total Regeneration Cycles"
       },
-      "regen_active": {
-        "name": "Regeneration Active"
-      },
       "salt_level": {
         "name": "Salt Level"
       },
       "salt_remaining": {
         "name": "Salt Remaining"
-      },
-      "salt_low": {
-        "name": "Salt Low Alert"
       },
       "water_hardness": {
         "name": "Water Hardness"
@@ -98,7 +92,7 @@
         "name": "Days In Operation"
       },
       "valve_error": {
-        "name": "Valve Error"
+        "name": "Valve Error Detail"
       },
       "reserve_capacity_gallons": {
         "name": "Reserve Capacity"

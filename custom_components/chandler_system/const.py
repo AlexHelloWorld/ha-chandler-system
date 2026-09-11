@@ -12,6 +12,7 @@ from homeassistant.components.button import ButtonEntityDescription
 from homeassistant.components.number import (
     NumberDeviceClass,
     NumberEntityDescription,
+    NumberMode,
 )
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -117,8 +118,6 @@ SENSOR_BATTERY_LEVEL = "battery_level"
 SENSOR_REGEN_COUNTER = "regen_counter"
 SENSOR_TOTAL_GALLONS = "total_gallons"
 SENSOR_DAYS_IN_OPERATION = "days_in_operation"
-SENSOR_SALT_LOW = "salt_low"
-SENSOR_REGEN_ACTIVE = "regen_active"
 SENSOR_VALVE_ERROR = "valve_error"
 SENSOR_RESERVE_CAPACITY_GALLONS = "reserve_capacity_gallons"
 SENSOR_TOTAL_GRAINS_CAPACITY = "total_grains_capacity"
@@ -331,16 +330,6 @@ SENSOR_DESCRIPTIONS: tuple[ChandlerSensorEntityDescription, ...] = (
         icon="mdi:refresh",
         value_fn=lambda d: d.regen_counter,
     ),
-    # Superseded by the binary sensor of the same name; kept so existing
-    # dashboards and automations do not break.
-    ChandlerSensorEntityDescription(
-        key=SENSOR_REGEN_ACTIVE,
-        translation_key=SENSOR_REGEN_ACTIVE,
-        name="Regeneration Active",
-        icon="mdi:refresh-circle",
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: "On" if d.regen_active else "Off",
-    ),
     ChandlerSensorEntityDescription(
         key=SENSOR_REGEN_STATE,
         translation_key=SENSOR_REGEN_STATE,
@@ -470,15 +459,6 @@ SENSOR_DESCRIPTIONS: tuple[ChandlerSensorEntityDescription, ...] = (
         icon="mdi:shaker",
         value_fn=lambda d: _tenths(d.brine_tank_remaining_salt),
     ),
-    # Superseded by the Salt Low binary sensor.
-    ChandlerSensorEntityDescription(
-        key=SENSOR_SALT_LOW,
-        translation_key=SENSOR_SALT_LOW,
-        name="Salt Low Alert",
-        icon="mdi:alert-circle",
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: "Low" if d.salt_low else "OK",
-    ),
 
     # System sensors
     ChandlerSensorEntityDescription(
@@ -509,13 +489,12 @@ SENSOR_DESCRIPTIONS: tuple[ChandlerSensorEntityDescription, ...] = (
         icon="mdi:calendar-range",
         value_fn=lambda d: d.days_in_operation,
     ),
-    # Superseded by the Valve Error binary sensor and the Last Error sensor.
     ChandlerSensorEntityDescription(
         key=SENSOR_VALVE_ERROR,
         translation_key=SENSOR_VALVE_ERROR,
-        name="Valve Error",
+        name="Valve Error Detail",
+        entity_category=EntityCategory.DIAGNOSTIC,
         icon="mdi:alert",
-        entity_registry_enabled_default=False,
         value_fn=lambda d: get_error_text(d.valve_error),
     ),
 
@@ -623,6 +602,7 @@ NUMBER_DESCRIPTIONS: tuple[ChandlerNumberEntityDescription, ...] = (
         native_max_value=99,
         native_step=1,
         entity_category=EntityCategory.CONFIG,
+        mode=NumberMode.BOX,
         icon="mdi:water-opacity",
         value_fn=lambda d: d.water_hardness,
         write_key="dwh",
@@ -636,6 +616,7 @@ NUMBER_DESCRIPTIONS: tuple[ChandlerNumberEntityDescription, ...] = (
         native_max_value=29,
         native_step=1,
         entity_category=EntityCategory.CONFIG,
+        mode=NumberMode.BOX,
         icon="mdi:calendar-sync",
         value_fn=lambda d: d.day_override,
         write_key="ddo",
@@ -648,6 +629,7 @@ NUMBER_DESCRIPTIONS: tuple[ChandlerNumberEntityDescription, ...] = (
         native_max_value=23,
         native_step=1,
         entity_category=EntityCategory.CONFIG,
+        mode=NumberMode.BOX,
         icon="mdi:clock-outline",
         value_fn=lambda d: d.regen_time_hours,
         write_key="drth",
@@ -661,6 +643,7 @@ NUMBER_DESCRIPTIONS: tuple[ChandlerNumberEntityDescription, ...] = (
         native_max_value=49,
         native_step=1,
         entity_category=EntityCategory.CONFIG,
+        mode=NumberMode.BOX,
         icon="mdi:storage-tank",
         value_fn=lambda d: d.reserve_capacity,
         write_key="asrc",
@@ -675,6 +658,7 @@ NUMBER_DESCRIPTIONS: tuple[ChandlerNumberEntityDescription, ...] = (
         native_max_value=399_000,
         native_step=1000,
         entity_category=EntityCategory.CONFIG,
+        mode=NumberMode.BOX,
         icon="mdi:gauge",
         value_fn=lambda d: _thousands(d.total_grains_capacity),
         write_key="astg",
@@ -690,6 +674,7 @@ NUMBER_DESCRIPTIONS: tuple[ChandlerNumberEntityDescription, ...] = (
         native_step=1,
         device_class=NumberDeviceClass.WEIGHT,
         entity_category=EntityCategory.CONFIG,
+        mode=NumberMode.BOX,
         icon="mdi:shaker",
         value_fn=lambda d: _tenths(d.brine_tank_remaining_salt),
         write_key="dbtr",
