@@ -21,7 +21,8 @@ class FakeClient:
 
     instances: list["FakeClient"] = []
 
-    def __init__(self, ble_device, auth_token, data_callback=None):
+    def __init__(self, ble_device, auth_token, data_callback=None,
+                 connection_lost_callback=None):
         self.is_connected = False
         self.writes: list[dict] = []
         self.data = DeviceData(

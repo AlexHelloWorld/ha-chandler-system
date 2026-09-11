@@ -82,6 +82,7 @@ def client():
     instance._notification_queue = asyncio.Queue()
     instance._write_lock = asyncio.Lock()
     instance._ack_waiter = None
+    instance._connection_lost_callback = None
     instance._state = ConnectionState.CONNECTED
     instance._monitor_task = None
     return instance

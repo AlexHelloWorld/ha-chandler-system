@@ -54,6 +54,7 @@ def client():
     instance._notification_queue = asyncio.Queue()
     instance._write_lock = asyncio.Lock()
     instance._ack_waiter = None
+    instance._connection_lost_callback = None
     instance._state = ConnectionState.DISCONNECTED
     instance._monitor_task = None
     instance._client = None
@@ -255,6 +256,43 @@ async def test_transport_failure_mid_write_ends_the_session(client):
 
     assert client._client is None
     assert client._state is ConnectionState.DISCONNECTED
+
+
+async def test_a_drop_asks_the_owner_to_reconnect(client):
+    """Recovery used to wait for the next poll, so a momentary drop left every
+    entity unavailable for a full interval."""
+    reconnects = []
+    client._connection_lost_callback = lambda: reconnects.append(1)
+    live = FakeBleakClient()
+    client._client = live
+    client._state = ConnectionState.CONNECTED
+
+    client._on_disconnected(live)
+
+    assert reconnects == [1]
+    # Reported only once the client knows it is disconnected, so a reconnect
+    # triggered from it does not see a stale state.
+    assert client._state is ConnectionState.DISCONNECTED
+
+
+async def test_a_deliberate_disconnect_does_not_ask_for_a_reconnect(client):
+    """Bleak reports an intentional disconnect through the same callback, and
+    acting on it would revive a link we are releasing on purpose -- reviving
+    the device during integration unload."""
+    reconnects = []
+    client._connection_lost_callback = lambda: reconnects.append(1)
+
+    class ReportingClient(FakeBleakClient):
+        async def disconnect(self):
+            await super().disconnect()
+            client._on_disconnected(self)
+
+    client._client = ReportingClient()
+    client._state = ConnectionState.CONNECTED
+
+    await client.disconnect()
+
+    assert reconnects == []
 
 
 async def test_teardown_is_safe_with_nothing_connected(client):

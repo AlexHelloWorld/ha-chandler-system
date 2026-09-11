@@ -8,7 +8,7 @@ from datetime import timedelta
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS, Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
@@ -69,6 +69,20 @@ class ChandlerDataUpdateCoordinator(DataUpdateCoordinator[DeviceData]):
         _LOGGER.debug("Received data update from device")
         self.async_set_updated_data(data)
 
+    @callback
+    def _on_connection_lost(self) -> None:
+        """Reconnect straight away rather than waiting for the next poll.
+
+        The client knows the link is gone the moment Bleak reports it, but
+        nothing reconnects until something asks it to. Left to the polling
+        interval, every brief drop took a full cycle to recover, and all the
+        entities showed as unavailable for the whole of it.
+
+        Debounced rather than immediate so a flapping link cannot turn into a
+        tight reconnect loop.
+        """
+        self.hass.async_create_task(self.async_request_refresh())
+
     @property
     def client(self) -> ChandlerClient | None:
         """Return the Bluetooth client."""
@@ -101,6 +115,7 @@ class ChandlerDataUpdateCoordinator(DataUpdateCoordinator[DeviceData]):
                 ble_device=ble_device,
                 auth_token=self._auth_token,
                 data_callback=self._on_data_received,
+                connection_lost_callback=self._on_connection_lost,
             )
         else:
             # Update BLE device (address may be stale)
