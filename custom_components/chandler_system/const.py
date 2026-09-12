@@ -26,6 +26,7 @@ from homeassistant.const import (
     UnitOfTime,
     UnitOfVolume,
 )
+from homeassistant.util import dt as dt_util
 
 DOMAIN = "chandler_system"
 
@@ -79,8 +80,8 @@ class ChandlerBinarySensorEntityDescription(BinarySensorEntityDescription):
 class ChandlerButtonEntityDescription(ButtonEntityDescription):
     """Describes a Chandler button entity."""
 
-    # The exact JSON payload written to the device when pressed
-    press_payload: dict[str, Any]
+    # Built when pressed, so a payload can depend on the moment it is sent
+    press_payload: Callable[[], dict[str, Any]]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -132,6 +133,8 @@ SENSOR_LAST_ERROR = "last_error"
 SENSOR_GALLONS_BETWEEN_REGENS = "gallons_between_regens"
 SENSOR_DAILY_GALLONS_HISTORY = "daily_gallons_history"
 SENSOR_PEAK_FLOW_HISTORY = "peak_flow_history"
+SENSOR_DEVICE_TIME = "device_time"
+SENSOR_CLOCK_DRIFT = "clock_drift"
 
 # Binary sensor keys
 BINARY_SENSOR_REGEN_ACTIVE = "regen_active_state"
@@ -144,6 +147,7 @@ BINARY_SENSOR_VALVE_ERROR = "valve_error_state"
 BUTTON_REGEN_NOW = "regen_now"
 BUTTON_REGEN_LATER = "regen_later"
 BUTTON_FIND_HOME = "find_home"
+BUTTON_SYNC_CLOCK = "sync_clock"
 
 # Number keys
 NUMBER_WATER_HARDNESS = "set_water_hardness"
@@ -224,6 +228,42 @@ def _thousands(value: int | None) -> int | None:
 def _first(values: list[float]) -> float | None:
     """Take the newest entry from a graph array."""
     return values[0] if values else None
+
+
+def clock_payload() -> dict[str, int]:
+    """Build the write that sets the valve's clock to local time."""
+    now = dt_util.now()
+    return {"dh": now.hour, "dm": now.minute, "ds": now.second}
+
+
+def _format_device_time(data: Any) -> str | None:
+    """Render the valve's own clock.
+
+    Seconds are left out: the device reports them only intermittently, so
+    including them would make the reading look stale between updates.
+    """
+    hours, minutes = data.time_hours, data.time_minutes
+    if hours is None or minutes is None:
+        return None
+    return f"{hours:02d}:{minutes:02d}"
+
+
+def _clock_drift_seconds(data: Any) -> int | None:
+    """Signed seconds the valve's clock is ahead of local time.
+
+    Regenerations run against the valve's own clock, so drift moves when they
+    actually happen.
+    """
+    hours, minutes = data.time_hours, data.time_minutes
+    if hours is None or minutes is None:
+        return None
+
+    device = hours * 3600 + minutes * 60 + (data.time_seconds or 0)
+    now = dt_util.now()
+    local = now.hour * 3600 + now.minute * 60 + now.second
+    # Wrapped into plus or minus twelve hours so readings taken either side
+    # of midnight do not come out as most of a day.
+    return (device - local + 43200) % 86400 - 43200
 
 
 def _format_regen_hour(data: Any) -> str | None:
@@ -428,6 +468,24 @@ SENSOR_DESCRIPTIONS: tuple[ChandlerSensorEntityDescription, ...] = (
         attributes_fn=lambda d: {"history": d.daily_gallons_history},
     ),
     ChandlerSensorEntityDescription(
+        key=SENSOR_DEVICE_TIME,
+        translation_key=SENSOR_DEVICE_TIME,
+        name="Device Time",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:clock-outline",
+        value_fn=_format_device_time,
+    ),
+    ChandlerSensorEntityDescription(
+        key=SENSOR_CLOCK_DRIFT,
+        translation_key=SENSOR_CLOCK_DRIFT,
+        name="Clock Drift",
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:clock-alert-outline",
+        value_fn=_clock_drift_seconds,
+    ),
+    ChandlerSensorEntityDescription(
         key=SENSOR_PEAK_FLOW_HISTORY,
         translation_key=SENSOR_PEAK_FLOW_HISTORY,
         name="Peak Flow Yesterday",
@@ -572,14 +630,14 @@ BUTTON_DESCRIPTIONS: tuple[ChandlerButtonEntityDescription, ...] = (
         translation_key=BUTTON_REGEN_NOW,
         name="Start Regeneration Now",
         icon="mdi:play-circle",
-        press_payload={"grn": 1},
+        press_payload=lambda: {"grn": 1},
     ),
     ChandlerButtonEntityDescription(
         key=BUTTON_REGEN_LATER,
         translation_key=BUTTON_REGEN_LATER,
         name="Schedule Regeneration",
         icon="mdi:clock-plus",
-        press_payload={"grl": 1},
+        press_payload=lambda: {"grl": 1},
     ),
     ChandlerButtonEntityDescription(
         key=BUTTON_FIND_HOME,
@@ -587,7 +645,15 @@ BUTTON_DESCRIPTIONS: tuple[ChandlerButtonEntityDescription, ...] = (
         name="Find Home",
         entity_category=EntityCategory.DIAGNOSTIC,
         icon="mdi:home-search",
-        press_payload={"gfh": 1},
+        press_payload=lambda: {"gfh": 1},
+    ),
+    ChandlerButtonEntityDescription(
+        key=BUTTON_SYNC_CLOCK,
+        translation_key=BUTTON_SYNC_CLOCK,
+        name="Sync Clock",
+        entity_category=EntityCategory.CONFIG,
+        icon="mdi:clock-check",
+        press_payload=clock_payload,
     ),
 )
 
