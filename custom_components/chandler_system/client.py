@@ -269,6 +269,7 @@ class ChandlerClient:
         ble_device: BLEDevice,
         auth_token: str,
         data_callback: Callable[[DeviceData], None] | None = None,
+        connection_lost_callback: Callable[[], None] | None = None,
     ) -> None:
         """Initialize the client.
 
@@ -276,10 +277,13 @@ class ChandlerClient:
             ble_device: BLEDevice from Home Assistant's bluetooth
             auth_token: Authentication token (UUID without dashes)
             data_callback: Optional callback when new data is received
+            connection_lost_callback: Optional callback when the link drops,
+                so the owner can reconnect rather than wait for its next poll
         """
         self._ble_device = ble_device
         self._auth_token = bytearray.fromhex(auth_token.replace("-", ""))
         self._data_callback = data_callback
+        self._connection_lost_callback = connection_lost_callback
 
         self._client: BleakClient | None = None
         self._state = ConnectionState.DISCONNECTED
@@ -351,6 +355,11 @@ class ChandlerClient:
         # so the loop unwinds on the next pass of the event loop.
         if self._monitor_task is not None:
             self._monitor_task.cancel()
+
+        # Reported last, once the state above is settled, so whatever the
+        # owner does in response sees a client that knows it is disconnected.
+        if self._connection_lost_callback is not None:
+            self._connection_lost_callback()
 
     def _mark_disconnected(self, reason: str) -> None:
         """Record that the session has ended and fail anything waiting on it."""
@@ -861,6 +870,14 @@ class ChandlerClient:
                 # over this same client.
                 if graceful:
                     await self._send_device_reset()
+
+                # Dropped before the link is closed. Bleak reports a
+                # deliberate disconnect through the same callback a real drop
+                # uses, and the owner must not be told to reconnect to
+                # something we are releasing on purpose. Clearing it here
+                # makes that callback recognise the link as no longer ours.
+                self._client = None
+
                 # Released in separate steps: failing to unsubscribe must not
                 # leave the link itself open.
                 try:

@@ -44,5 +44,5 @@ class ChandlerButton(ChandlerEntity, ButtonEntity):
         # The device pushes the resulting state change on its own; there is
         # nothing to poll for.
         await self.coordinator.async_write_keys(
-            self.entity_description.press_payload
+            self.entity_description.press_payload()
         )

@@ -132,6 +132,12 @@
       },
       "peak_flow_history": {
         "name": "Peak Flow Yesterday"
+      },
+      "device_time": {
+        "name": "Device Time"
+      },
+      "clock_drift": {
+        "name": "Clock Drift"
       }
     },
     "binary_sensor": {
@@ -160,6 +166,9 @@
       },
       "find_home": {
         "name": "Find Home"
+      },
+      "sync_clock": {
+        "name": "Sync Clock"
       }
     },
     "number": {

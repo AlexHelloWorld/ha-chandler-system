@@ -170,3 +170,50 @@ def test_partial_updates_do_not_clobber_prior_fields(client):
 
     assert client.data.water_hardness == 25
     assert client.data.regen_state == 5
+
+
+def _sensor(key):
+    from custom_components.chandler_system.const import SENSOR_DESCRIPTIONS
+
+    return next(d for d in SENSOR_DESCRIPTIONS if d.key == key)
+
+
+def test_device_time_is_rendered_as_a_clock(client):
+    client._map_json_to_data({"dh": 9, "dm": 5})
+    assert _sensor("device_time").value_fn(client.data) == "09:05"
+
+
+def test_device_time_absent_until_the_device_reports_it(client):
+    assert _sensor("device_time").value_fn(client.data) is None
+
+
+def test_clock_drift_is_signed(client):
+    """Positive means the valve is ahead of local time."""
+    from unittest.mock import patch
+
+    import custom_components.chandler_system.const as const
+
+    class FakeNow:
+        hour, minute, second = 10, 0, 0
+
+    client._map_json_to_data({"dh": 10, "dm": 2, "ds": 30})
+    with patch.object(const.dt_util, "now", return_value=FakeNow):
+        assert _sensor("clock_drift").value_fn(client.data) == 150
+
+    client._map_json_to_data({"dh": 9, "dm": 58, "ds": 0})
+    with patch.object(const.dt_util, "now", return_value=FakeNow):
+        assert _sensor("clock_drift").value_fn(client.data) == -120
+
+
+def test_clock_drift_across_midnight_is_not_most_of_a_day(client):
+    """A reading either side of midnight is minutes apart, not 23 hours."""
+    from unittest.mock import patch
+
+    import custom_components.chandler_system.const as const
+
+    class JustBeforeMidnight:
+        hour, minute, second = 23, 59, 0
+
+    client._map_json_to_data({"dh": 0, "dm": 1, "ds": 0})
+    with patch.object(const.dt_util, "now", return_value=JustBeforeMidnight):
+        assert _sensor("clock_drift").value_fn(client.data) == 120

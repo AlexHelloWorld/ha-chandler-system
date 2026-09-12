@@ -9,9 +9,8 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
-from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
+from .const import DOMAIN, clock_payload
 
 if TYPE_CHECKING:
     from . import ChandlerDataUpdateCoordinator
@@ -123,8 +122,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
 
     async def async_sync_clock(call: ServiceCall) -> None:
         """Set the valve's clock from Home Assistant's local time."""
-        now = dt_util.now()
-        await _write(call, {"dh": now.hour, "dm": now.minute, "ds": now.second})
+        await _write(call, clock_payload())
 
     for service, handler, schema in (
         (

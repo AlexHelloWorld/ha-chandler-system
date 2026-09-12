@@ -21,7 +21,8 @@ class FakeClient:
 
     instances: list["FakeClient"] = []
 
-    def __init__(self, ble_device, auth_token, data_callback=None):
+    def __init__(self, ble_device, auth_token, data_callback=None,
+                 connection_lost_callback=None):
         self.is_connected = False
         self.writes: list[dict] = []
         self.data = DeviceData(
@@ -37,6 +38,8 @@ class FakeClient:
             regen_counter_resettable=7,
             total_gallons_resettable=123456,
             regen_time_hours=2,
+            time_hours=2,
+            time_minutes=0,
             water_hardness=25,
             day_override=7,
             reserve_capacity=30,
@@ -110,6 +113,8 @@ async def test_entities_are_created(hass: HomeAssistant, setup_integration):
     assert states["number.water_softener_water_hardness_setting"] == "25"
     assert states["switch.water_softener_auto_reserve_mode"] == "on"
     assert "button.water_softener_start_regeneration_now" in states
+    assert "button.water_softener_sync_clock" in states
+    assert states["sensor.water_softener_device_time"] == "02:00"
 
 
 async def test_regen_position_attributes(hass: HomeAssistant, setup_integration):
@@ -156,6 +161,25 @@ async def test_button_sends_regen_command(hass: HomeAssistant, setup_integration
     )
 
     assert FakeClient.instances[0].writes == [{"grn": 1}]
+
+
+async def test_sync_clock_button_writes_the_current_time(
+    hass: HomeAssistant, setup_integration
+):
+    """The clock service had no UI affordance; the button is that affordance."""
+    await hass.services.async_call(
+        "button",
+        "press",
+        {"entity_id": "button.water_softener_sync_clock"},
+        blocking=True,
+    )
+
+    written = FakeClient.instances[0].writes
+    assert len(written) == 1
+    assert set(written[0]) == {"dh", "dm", "ds"}
+    assert 0 <= written[0]["dh"] <= 23
+    assert 0 <= written[0]["dm"] <= 59
+    assert 0 <= written[0]["ds"] <= 59
 
 
 async def test_switch_writes_boolean_as_int(hass: HomeAssistant, setup_integration):
