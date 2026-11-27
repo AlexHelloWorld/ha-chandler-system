@@ -22,11 +22,13 @@ SERVICE_FIND_HOME = "find_home"
 SERVICE_SET_SALT_LEVEL = "set_salt_level"
 SERVICE_RESET_COUNTERS = "reset_counters"
 SERVICE_SYNC_CLOCK = "sync_clock"
+SERVICE_SET_CYCLE_POSITION_TIMES = "set_cycle_position_times"
 
 ATTR_DEVICE_ID = "device_id"
 ATTR_WHEN = "when"
 ATTR_POUNDS = "pounds"
 ATTR_COUNTERS = "counters"
+ATTR_POSITIONS = "positions"
 
 WHEN_NOW = "now"
 WHEN_NEXT_SCHEDULED = "next_scheduled"
@@ -68,6 +70,17 @@ RESET_COUNTERS_SCHEMA = vol.Schema(
 )
 
 SYNC_CLOCK_SCHEMA = vol.Schema(_TARGET_SCHEMA)
+
+SET_CYCLE_POSITION_TIMES_SCHEMA = vol.Schema(
+    {
+        **_TARGET_SCHEMA,
+        vol.Required(ATTR_POSITIONS): vol.All(
+            cv.ensure_list,
+            [vol.All(vol.Coerce(int), vol.Range(min=0, max=199))],
+            vol.Length(min=1, max=16),
+        ),
+    }
+)
 
 
 def _coordinator_for_device(
@@ -124,6 +137,19 @@ def async_setup_services(hass: HomeAssistant) -> None:
         """Set the valve's clock from Home Assistant's local time."""
         await _write(call, clock_payload())
 
+    async def async_set_cycle_position_times(call: ServiceCall) -> None:
+        """Set regeneration step durations (preserving index 0 service slot)."""
+        coordinator = _coordinator_for_device(hass, call.data[ATTR_DEVICE_ID])
+        existing = (
+            coordinator.data.cycle_position_times
+            if coordinator.data is not None
+            else []
+        )
+        service_slot = existing[0] if existing else 0
+        await coordinator.async_write_keys(
+            {"aspt": [service_slot, *call.data[ATTR_POSITIONS]]}
+        )
+
     for service, handler, schema in (
         (
             SERVICE_START_REGENERATION,
@@ -134,6 +160,11 @@ def async_setup_services(hass: HomeAssistant) -> None:
         (SERVICE_SET_SALT_LEVEL, async_set_salt_level, SET_SALT_LEVEL_SCHEMA),
         (SERVICE_RESET_COUNTERS, async_reset_counters, RESET_COUNTERS_SCHEMA),
         (SERVICE_SYNC_CLOCK, async_sync_clock, SYNC_CLOCK_SCHEMA),
+        (
+            SERVICE_SET_CYCLE_POSITION_TIMES,
+            async_set_cycle_position_times,
+            SET_CYCLE_POSITION_TIMES_SCHEMA,
+        ),
     ):
         hass.services.async_register(DOMAIN, service, handler, schema=schema)
 
@@ -146,5 +177,6 @@ def async_unload_services(hass: HomeAssistant) -> None:
         SERVICE_SET_SALT_LEVEL,
         SERVICE_RESET_COUNTERS,
         SERVICE_SYNC_CLOCK,
+        SERVICE_SET_CYCLE_POSITION_TIMES,
     ):
         hass.services.async_remove(DOMAIN, service)

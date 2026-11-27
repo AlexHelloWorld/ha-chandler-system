@@ -6,11 +6,11 @@
   "dependencies": ["bluetooth_adapters"],
   "documentation": "https://github.com/AlexHelloWorld/ha-chandler-system",
   "integration_type": "device",
-  "iot_class": "local_push",
+  "iot_class": "local_polling",
   "issue_tracker": "https://github.com/AlexHelloWorld/ha-chandler-system/issues",
   "loggers": ["custom_components.chandler_system"],
   "requirements": ["bleak>=0.21.0", "bleak-retry-connector>=3.4.0"],
-  "version": "0.2.0",
+  "version": "0.9.0",
   "bluetooth": [
     {
       "service_uuid": "8d53dc1d-1db7-4cd3-868b-8a527460aa84",
@@ -18,4 +18,3 @@
     }
   ]
 }
-

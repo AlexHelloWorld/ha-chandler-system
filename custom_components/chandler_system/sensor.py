@@ -40,9 +40,11 @@ class ChandlerSensor(ChandlerEntity, SensorEntity):
 
     entity_description: ChandlerSensorEntityDescription
 
-    # The error log and graph arrays would otherwise be written to the
-    # recorder database on every state change.
-    _unrecorded_attributes = frozenset({"error_log", "history"})
+    # The error log, graph arrays, and cycle lists would otherwise be written
+    # to the recorder database on every state change.
+    _unrecorded_attributes = frozenset(
+        {"error_log", "history", "positions", "cycle_position_times"}
+    )
 
     @property
     def native_value(self) -> Any:

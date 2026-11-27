@@ -1,28 +1,62 @@
-"""Test connection lifecycle: reconnect, teardown, and drop handling."""
+"""Test short-lived BLE polling sessions, teardown, and cooldown behavior."""
 import asyncio
+import json
 from unittest.mock import patch
 
 import pytest
-from bleak.exc import BleakError
 
-from custom_components.chandler_system import protocol
+from custom_components.chandler_system import crc16, protocol
 from custom_components.chandler_system.client import (
+    ChandlerAuthError,
     ChandlerClient,
+    ChandlerConnectionError,
     ChandlerWriteError,
     ConnectionState,
     DeviceData,
 )
 
 
-class FakeBleakClient:
-    """A BleakClient that records the calls that release a connection."""
+def device_packet(payload: dict) -> bytes:
+    """Frame a payload the way the device does (little-endian CRC)."""
+    body = bytes([protocol.HEADER_SINGLE_PACKET]) + json.dumps(
+        payload, separators=(",", ":")
+    ).encode("utf-8")
+    checksum = crc16.compute(body)
+    return body + bytes([checksum & 0xFF, (checksum >> 8) & 0xFF])
 
-    def __init__(self, connected=True):
-        self.is_connected = connected
+
+def framed(header: int, payload: bytes) -> bytes:
+    """Frame a raw chunk with an arbitrary header and valid device CRC."""
+    body = bytes([header]) + payload
+    checksum = crc16.compute(body)
+    return body + bytes([checksum & 0xFF, (checksum >> 8) & 0xFF])
+
+
+class FakeBleakClient:
+    """Simulated BleakClient that speaks the Chandler handshake and burst flow."""
+
+    def __init__(
+        self,
+        *,
+        auth_ok: bool = True,
+        burst_packets: list[bytes] | None = None,
+        write_reply: int | None = protocol.PACKET_ACK,
+        post_write_packets: list[bytes] | None = None,
+        disconnect_on_reset: bool = True,
+        disconnected_cb=None,
+    ):
+        self.is_connected = True
         self.written: list[bytes] = []
         self.stop_notify_calls = 0
         self.disconnect_calls = 0
         self.notify_callback = None
+        self._auth_ok = auth_ok
+        self._burst_packets = list(burst_packets or [])
+        self._write_reply = write_reply
+        self._post_write_packets = list(post_write_packets or [])
+        self._disconnect_on_reset = disconnect_on_reset
+        self._disconnected_cb = disconnected_cb
+        self._authenticated = False
 
     async def start_notify(self, _char, callback):
         self.notify_callback = callback
@@ -34,341 +68,313 @@ class FakeBleakClient:
         self.disconnect_calls += 1
         self.is_connected = False
 
+    def _emit(self, raw: bytes) -> None:
+        if self.notify_callback is not None:
+            self.notify_callback(None, raw)
+
     async def write_gatt_char(self, _char, data, response=False):
         if not self.is_connected:
             raise RuntimeError("writing to a closed link")
-        self.written.append(bytes(data))
+        raw = bytes(data)
+        self.written.append(raw)
+
+        # Auth request 0xEA -> ACK
+        if raw == bytes([protocol.PACKET_AUTH_REQUEST]):
+            self._emit(bytes([protocol.PACKET_ACK]))
+            return
+
+        # Device reset 'R' -> valve closes link gracefully
+        if raw == bytes([protocol.PACKET_DEVICE_RESET]):
+            if self._disconnect_on_reset:
+                self.is_connected = False
+                if self._disconnected_cb is not None:
+                    self._disconnected_cb(self)
+            return
+
+        # Status bytes (ACK, POLO, TIMEOUT_ACK) don't need replies
+        if len(raw) == 1:
+            return
+
+        # 16-byte raw auth token -> {"as": 2} + burst (or {"as": 1})
+        if not self._authenticated and len(raw) == 16:
+            if not self._auth_ok:
+                self._emit(device_packet({"as": 1}))
+                return
+            self._authenticated = True
+            self._emit(device_packet({"as": 2}))
+            for pkt in self._burst_packets:
+                self._emit(pkt)
+            return
+
+        # Data write packet from host -> ACK/NAK + optional echo packets
+        if self._write_reply is not None:
+            self._emit(bytes([self._write_reply]))
+        for pkt in self._post_write_packets:
+            self._emit(pkt)
 
 
 class FakeBLEDevice:
-    name = "Water Softener"
+    name = "Combo Water Filter"
     address = "AA:BB:CC:DD:EE:FF"
 
 
 @pytest.fixture
-def client():
-    instance = ChandlerClient.__new__(ChandlerClient)
-    instance._data = DeviceData()
-    instance._data_callback = None
-    instance._data_buffer = bytearray()
-    instance._notification_queue = asyncio.Queue()
-    instance._write_lock = asyncio.Lock()
-    instance._ack_waiter = None
-    instance._connection_lost_callback = None
-    instance._state = ConnectionState.DISCONNECTED
-    instance._monitor_task = None
-    instance._client = None
-    instance._ble_device = FakeBLEDevice()
-    instance._auth_token = bytearray(b"\x01")
-    return instance
-
-
-def patch_connect(new_client):
-    """Patch out the BLE connect and the handshake."""
-    return (
-        patch(
-            "custom_components.chandler_system.client.establish_connection",
-            return_value=new_client,
-        ),
-        patch.object(ChandlerClient, "_authenticate", return_value=True),
+def fast_timeouts(monkeypatch):
+    """Shorten session timers so connection lifecycle tests run in milliseconds."""
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.POLL_BURST_QUIET_TIMEOUT", 0.02
+    )
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.POLL_INITIAL_DATA_TIMEOUT", 0.05
+    )
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.POLL_MAX_DRAIN_DURATION", 0.5
+    )
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.POST_WRITE_QUIET_TIMEOUT", 0.02
+    )
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.POST_WRITE_MAX_DURATION", 0.2
+    )
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.DEVICE_RESET_WAIT_DISCONNECT", 0.02
+    )
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.DEVICE_RESET_MIN_DELAY", 0.0
+    )
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.MIN_SESSION_GAP", 0.0
     )
 
 
-async def _connect(client, new_client):
-    establish, authenticate = patch_connect(new_client)
-    with establish as mock_establish, authenticate:
-        result = await client.connect()
-    await client.disconnect()
-    return result, mock_establish
+@pytest.fixture
+def client(fast_timeouts):
+    return ChandlerClient(
+        ble_device=FakeBLEDevice(),
+        auth_token="8dffdfbd-40cc-4b86-8df8-1d48463b20f1",
+    )
 
 
-async def test_reconnects_when_state_is_stale(client):
-    """A dropped link must not block reconnection.
+def _patch_establish(factory):
+    async def fake_establish(_cls, _dev, _addr, disconnected_callback=None, **_kw):
+        ble = factory(disconnected_callback)
+        return ble
 
-    The monitor loop can take its full idle timeout to notice a drop, so the
-    client's own state still says connected. Refusing on that basis left the
-    integration unable to reconnect for the length of that window.
-    """
-    dropped = FakeBleakClient(connected=False)
-    client._client = dropped
+    return patch(
+        "custom_components.chandler_system.client.establish_connection",
+        side_effect=fake_establish,
+    )
+
+
+async def test_poll_drains_burst_and_sends_device_reset(client):
+    """A normal poll authenticates, drains JSON packets, and closes with 'R'."""
+    created = []
+
+    def make(cb):
+        ble = FakeBleakClient(
+            burst_packets=[
+                device_packet({"dlf": 618, "dwh": 15, "gpf": 245}),
+                device_packet({"dwu": 4520, "shgt": 123456}),
+            ],
+            disconnected_cb=cb,
+        )
+        created.append(ble)
+        return ble
+
+    with _patch_establish(make):
+        data = await client.async_poll()
+
+    ble = created[0]
+    assert data.firmware_version == 618
+    assert data.water_hardness == 15
+    assert data.present_flow_gpm == 2.45
+    assert data.total_gallons_value == 1234.56
+    assert bytes([protocol.PACKET_DEVICE_RESET]) in ble.written
+    assert client.state is ConnectionState.DISCONNECTED
+    assert client._client is None
+
+
+async def test_poll_handles_keepalive_and_multi_packet_json(client):
+    """MARCOs are answered with POLO and split JSON waits for the last chunk."""
+    created = []
+
+    def make(cb):
+        ble = FakeBleakClient(
+            burst_packets=[
+                bytes([protocol.PACKET_MARCO]),
+                framed(protocol.HEADER_FIRST_PACKET, b'{"dwh":22,'),
+                bytes([protocol.PACKET_TIMEOUT_QUERY]),
+                framed(protocol.HEADER_LAST_PACKET, b'"ddo":14}'),
+            ],
+            disconnected_cb=cb,
+        )
+        created.append(ble)
+        return ble
+
+    with _patch_establish(make):
+        data = await client.async_poll()
+
+    ble = created[0]
+    assert data.water_hardness == 22
+    assert data.day_override == 14
+    assert bytes([protocol.PACKET_POLO]) in ble.written
+    assert bytes([protocol.PACKET_TIMEOUT_ACK]) in ble.written
+    assert bytes([protocol.PACKET_DEVICE_RESET]) in ble.written
+
+
+async def test_poll_runs_post_poll_write_in_same_session(client):
+    """Auto clock sync piggybacks on the open poll session without reconnecting."""
+    connect_count = 0
+
+    def make(cb):
+        nonlocal connect_count
+        connect_count += 1
+        return FakeBleakClient(
+            burst_packets=[device_packet({"dh": 10, "dm": 0, "ds": 0})],
+            post_write_packets=[device_packet({"dh": 12, "dm": 30, "ds": 5})],
+            disconnected_cb=cb,
+        )
+
+    with _patch_establish(make):
+        data = await client.async_poll(
+            post_poll_write=lambda _d: {"dh": 12, "dm": 30, "ds": 5}
+        )
+
+    assert connect_count == 1
+    assert data.time_hours == 12
+    assert data.time_minutes == 30
+    assert data.time_seconds == 5
+
+
+async def test_poll_raises_auth_error_on_rejected_token(client):
+    """An explicit {'as': 1} raises ChandlerAuthError and still closes cleanly."""
+    created = []
+
+    def make(cb):
+        ble = FakeBleakClient(auth_ok=False, disconnected_cb=cb)
+        created.append(ble)
+        return ble
+
+    with _patch_establish(make):
+        with pytest.raises(ChandlerAuthError):
+            await client.async_poll()
+
+    assert bytes([protocol.PACKET_DEVICE_RESET]) in created[0].written
+    assert client.state is ConnectionState.DISCONNECTED
+
+
+async def test_poll_raises_connection_error_on_establish_failure(client):
+    """A connect failure raises ChandlerConnectionError and leaves no link."""
+    with patch(
+        "custom_components.chandler_system.client.establish_connection",
+        side_effect=RuntimeError("proxy busy"),
+    ):
+        with pytest.raises(ChandlerConnectionError, match="Failed to connect"):
+            await client.async_poll()
+
+    assert client._client is None
+    assert client.state is ConnectionState.DISCONNECTED
+
+
+async def test_close_session_disconnects_even_if_stop_notify_fails(client):
+    """stop_notify errors must not prevent disconnect() when valve stays open."""
+    ble = FakeBleakClient(disconnect_on_reset=False)
+
+    async def fail_stop(_char):
+        raise RuntimeError("BlueZ busy")
+
+    ble.stop_notify = fail_stop
+    client._client = ble
     client._state = ConnectionState.CONNECTED
 
-    fresh = FakeBleakClient()
-    result, mock_establish = await _connect(client, fresh)
+    await client._close_session(graceful=True)
 
-    assert result is True
-    assert mock_establish.called
-
-
-async def test_connect_releases_a_previous_link(client):
-    """A still-open link is closed before a new one is established."""
-    stale = FakeBleakClient(connected=True)
-    client._client = stale
-    client._state = ConnectionState.CONNECTED
-
-    await _connect(client, FakeBleakClient())
-
-    assert stale.stop_notify_calls == 1
-    assert stale.disconnect_calls == 1
+    assert ble.disconnect_calls == 1
+    assert not ble.is_connected
+    assert client._client is None
 
 
-async def test_connect_registers_a_disconnect_callback(client):
-    """Bleak reports drops directly, rather than us inferring them."""
-    establish, authenticate = patch_connect(FakeBleakClient())
-    with establish as mock_establish, authenticate:
-        await client.connect()
-    await client.disconnect()
+async def test_fresh_poll_clears_transient_error_but_preserves_identity(client):
+    """A cleared gve must not remain stuck across polls; firmware metadata is kept."""
+    polls = [
+        [device_packet({"dlf": 618, "dlsa": 1, "dlsb": 2, "gve": 4})],
+        # gve omitted -> healthy; dlf omitted -> preserved from prior poll
+        [device_packet({"dwh": 20})],
+    ]
 
-    callback = mock_establish.call_args.kwargs["disconnected_callback"]
-    assert callback == client._on_disconnected
+    def make(cb):
+        return FakeBleakClient(burst_packets=polls.pop(0), disconnected_cb=cb)
+
+    with _patch_establish(make):
+        first = await client.async_poll()
+        second = await client.async_poll()
+
+    assert first.has_valve_error is True
+    assert second.has_valve_error is False
+    assert second.valve_error is None
+    assert second.firmware_version == 618
+    assert second.serial_number == "12"
 
 
-async def test_a_superseded_link_cannot_feed_the_next_session(client):
-    """Notifications from a replaced link must not reach the new session.
+async def test_min_session_gap_waits_between_sessions(client, monkeypatch):
+    """Back-to-back sessions respect MIN_SESSION_GAP so the radio can reset."""
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.MIN_SESSION_GAP", 0.05
+    )
 
-    A stray acknowledgement arriving this way would be read as the response
-    to whatever write is currently in flight.
-    """
-    first = FakeBleakClient()
-    establish, authenticate = patch_connect(first)
-    with establish, authenticate:
-        await client.connect()
-    orphan_callback = first.notify_callback
+    def make(cb):
+        return FakeBleakClient(
+            burst_packets=[device_packet({"dwh": 10})], disconnected_cb=cb
+        )
 
-    # The link drops and we reconnect.
-    first.is_connected = False
-    second = FakeBleakClient()
-    establish, authenticate = patch_connect(second)
-    with establish, authenticate:
-        await client.connect()
-    await client.disconnect()
+    loop = asyncio.get_running_loop()
+    with _patch_establish(make):
+        await client.async_poll()
+        t0 = loop.time()
+        await client.async_poll()
+        elapsed = loop.time() - t0
 
-    assert second.notify_callback is not orphan_callback
+    assert elapsed >= 0.04
 
-    orphan_callback(None, b"\xcc")
+
+async def test_superseded_link_cannot_feed_next_session(client):
+    """Notifications emitted on an old session's callback never reach the new queue."""
+    callbacks = []
+
+    def make(cb):
+        ble = FakeBleakClient(
+            burst_packets=[device_packet({"dwh": 10})], disconnected_cb=cb
+        )
+        orig_start = ble.start_notify
+
+        async def record_start(char, notify_cb):
+            callbacks.append(notify_cb)
+            await orig_start(char, notify_cb)
+
+        ble.start_notify = record_start
+        return ble
+
+    with _patch_establish(make):
+        await client.async_poll()
+        await client.async_poll()
+
+    assert len(callbacks) == 2
+    assert callbacks[0] is not callbacks[1]
+    callbacks[0](None, b"\xcc")
     assert client._notification_queue.empty()
 
 
-async def test_failed_connect_leaves_no_link_behind(client):
-    """A connect that raises must not strand a half-open connection."""
-    with patch(
-        "custom_components.chandler_system.client.establish_connection",
-        side_effect=RuntimeError("boom"),
-    ):
-        assert await client.connect() is False
-
-    assert client._client is None
-    assert client._state is ConnectionState.DISCONNECTED
-
-
-async def test_reconnecting_does_not_leave_monitor_loops_behind(client):
-    """Each connection must retire the previous connection's monitor loop.
-
-    An orphan keeps reading the old queue forever while still touching shared
-    state, so it can mark the live session disconnected or fail one of its
-    writes.
-    """
-    def monitor_loops():
-        # Matched on qualified name: a substring test would also match this
-        # test's own task, whose name contains "monitor_loop".
-        return [
-            task
-            for task in asyncio.all_tasks()
-            if getattr(task.get_coro(), "__qualname__", None)
-            == "ChandlerClient._monitor_loop"
-        ]
-
-    for _ in range(3):
-        establish, authenticate = patch_connect(FakeBleakClient())
-        with establish, authenticate:
-            await client.connect()
-        await asyncio.sleep(0)
-
-    assert len(monitor_loops()) == 1
-
-    await client.disconnect()
-    assert monitor_loops() == []
-
-
-async def test_teardown_releases_the_link_even_if_unsubscribing_fails(client):
-    """Skipping disconnect() would strand exactly the half-open link this
-    teardown exists to prevent."""
-    stubborn = FakeBleakClient()
-    stubborn.stop_notify = _raise_busy
-    client._client = stubborn
-
-    await client._teardown()
-
-    assert stubborn.disconnect_calls == 1
-    assert not stubborn.is_connected
-    assert client._client is None
-
-
-async def test_link_dropping_during_the_handshake_fails_the_connect(client):
-    """Starting a monitor loop over a dead link would report a live session."""
-    dropping = FakeBleakClient()
-
-    async def authenticate_then_drop(self):
-        dropping.is_connected = False
-        return True
-
-    with patch(
-        "custom_components.chandler_system.client.establish_connection",
-        return_value=dropping,
-    ), patch.object(ChandlerClient, "_authenticate", authenticate_then_drop):
-        assert await client.connect() is False
-
-    assert client._client is None
-    assert client._monitor_task is None
-
-
-async def _raise_busy(_char):
-    raise RuntimeError("BlueZ is busy")
-
-
-async def test_connect_asks_a_live_previous_link_to_release(client):
-    """A link still up has to be told to let go.
-
-    The valve holds the connection well past our disconnect otherwise, which
-    blocks the very attempt this teardown is clearing the way for.
-    """
-    stale = FakeBleakClient(connected=True)
-    client._client = stale
-    client._state = ConnectionState.CONNECTED
-
-    await _connect(client, FakeBleakClient())
-
-    assert bytes([protocol.PACKET_DEVICE_RESET]) in stale.written
-
-
-async def test_transport_failure_mid_write_ends_the_session(client):
-    """A write that fails in the transport is as ambiguous as one that goes
-    unanswered, and must not leave the session looking healthy."""
-    class FailingWrite(FakeBleakClient):
-        async def write_gatt_char(self, _char, data, response=False):
-            raise BleakError("link went away mid-write")
-
-    client._client = FailingWrite()
-    client._state = ConnectionState.CONNECTED
-
-    with pytest.raises(ChandlerWriteError, match="Failed to send"):
-        await client.async_write_keys({"dwh": 25})
-
-    assert client._client is None
-    assert client._state is ConnectionState.DISCONNECTED
-
-
-async def test_a_drop_asks_the_owner_to_reconnect(client):
-    """Recovery used to wait for the next poll, so a momentary drop left every
-    entity unavailable for a full interval."""
-    reconnects = []
-    client._connection_lost_callback = lambda: reconnects.append(1)
-    live = FakeBleakClient()
-    client._client = live
-    client._state = ConnectionState.CONNECTED
-
-    client._on_disconnected(live)
-
-    assert reconnects == [1]
-    # Reported only once the client knows it is disconnected, so a reconnect
-    # triggered from it does not see a stale state.
-    assert client._state is ConnectionState.DISCONNECTED
-
-
-async def test_a_deliberate_disconnect_does_not_ask_for_a_reconnect(client):
-    """Bleak reports an intentional disconnect through the same callback, and
-    acting on it would revive a link we are releasing on purpose -- reviving
-    the device during integration unload."""
-    reconnects = []
-    client._connection_lost_callback = lambda: reconnects.append(1)
-
-    class ReportingClient(FakeBleakClient):
-        async def disconnect(self):
-            await super().disconnect()
-            client._on_disconnected(self)
-
-    client._client = ReportingClient()
-    client._state = ConnectionState.CONNECTED
-
-    await client.disconnect()
-
-    assert reconnects == []
-
-
-async def test_teardown_is_safe_with_nothing_connected(client):
-    await client._teardown()
-
-    assert client._client is None
-    assert client._state is ConnectionState.DISCONNECTED
-
-
-async def test_disconnect_callback_stops_the_monitor_loop(client):
-    live = FakeBleakClient()
-    client._client = live
-    client._state = ConnectionState.CONNECTED
-    client._monitor_task = asyncio.create_task(client._monitor_loop())
-    await asyncio.sleep(0)
-
-    client._on_disconnected(live)
-
-    assert client._state is ConnectionState.DISCONNECTED
-    # Cancellation is requested synchronously but only takes effect once the
-    # loop next runs.
-    await asyncio.sleep(0)
-    assert client._monitor_task.done()
-
-
-async def test_disconnect_callback_ignores_a_superseded_link(client):
-    """A late callback from a replaced link must not disturb the new one."""
-    current = FakeBleakClient()
-    client._client = current
-    client._state = ConnectionState.CONNECTED
-
-    client._monitor_task = asyncio.create_task(client._monitor_loop())
-    await asyncio.sleep(0)
-
-    client._on_disconnected(FakeBleakClient())
-    await asyncio.sleep(0)
-
-    assert client._state is ConnectionState.CONNECTED
-    assert not client._monitor_task.done()
-
-    await client._cancel_monitor_task()
-
-
-async def test_disconnect_callback_fails_a_pending_write(client):
-    """A write in flight fails at once instead of waiting out its timeout."""
-    live = FakeBleakClient()
-    client._client = live
-    client._state = ConnectionState.CONNECTED
-
-    write = asyncio.create_task(client.async_write_keys({"grn": 1}))
-    await asyncio.sleep(0)
-
-    client._on_disconnected(live)
-
-    with pytest.raises(ChandlerWriteError, match="dropped"):
-        await write
-
-
-async def test_monitor_loop_exit_fails_a_pending_write(client):
+async def test_send_packet_raises_when_link_is_down(client):
+    """Writing while disconnected raises ChandlerWriteError."""
     client._client = FakeBleakClient()
-    client._state = ConnectionState.CONNECTED
-    waiter = asyncio.get_running_loop().create_future()
-    client._ack_waiter = waiter
-
-    client._monitor_task = asyncio.create_task(client._monitor_loop())
-    await asyncio.sleep(0)
-    await client._cancel_monitor_task()
-
-    assert waiter.done()
-    with pytest.raises(ChandlerWriteError):
-        waiter.result()
-
-
-async def test_send_packet_raises_when_the_link_is_down(client):
-    """Silently dropping the packet made a dead link look like a timeout."""
-    client._client = FakeBleakClient(connected=False)
+    client._client.is_connected = False
 
     with pytest.raises(ChandlerWriteError, match="not connected"):
         await client._send_packet(protocol.build_status_packet(protocol.PACKET_ACK))
+
+
+async def test_disconnect_on_idle_client_is_safe(client):
+    await client.disconnect()
+    assert client._client is None
+    assert client.state is ConnectionState.DISCONNECTED
+    assert isinstance(client.data, DeviceData)

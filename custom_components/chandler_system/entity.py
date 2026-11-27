@@ -30,13 +30,27 @@ class ChandlerEntity(CoordinatorEntity["ChandlerDataUpdateCoordinator"]):
         super().__init__(coordinator)
 
         self.entity_description = description
+        self._device_address = device_address
+        self._device_name = device_name
         self._attr_unique_id = f"{device_address}_{description.key}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device_address)},
-            connections={(dr.CONNECTION_BLUETOOTH, device_address)},
-            name=device_name,
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device metadata enriched from the valve handshake."""
+        data = self.coordinator.data
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._device_address)},
+            connections={(dr.CONNECTION_BLUETOOTH, self._device_address)},
+            name=self._device_name,
             manufacturer="Chandler Systems",
-            model="Water System",
+            model=(
+                data.valve_type_text
+                if data and data.valve_type_text
+                else "Water System"
+            ),
+            sw_version=data.firmware_version_text if data else None,
+            hw_version=data.valve_series_text if data else None,
+            serial_number=data.serial_number if data else None,
         )
 
     def _value(self, value_fn: Any) -> Any:

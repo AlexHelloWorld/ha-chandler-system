@@ -4,6 +4,7 @@ from __future__ import annotations
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
@@ -35,14 +36,24 @@ async def async_setup_entry(
 
 
 class ChandlerButton(ChandlerEntity, ButtonEntity):
-    """Button that sends a command to a Chandler valve."""
+    """Button that sends a command or triggers a poll on a Chandler valve."""
 
     entity_description: ChandlerButtonEntityDescription
 
     async def async_press(self) -> None:
-        """Send the button's command to the device."""
-        # The device pushes the resulting state change on its own; there is
-        # nothing to poll for.
-        await self.coordinator.async_write_keys(
-            self.entity_description.press_payload()
-        )
+        """Execute the button's action or send its write command."""
+        if self.entity_description.action == "refresh":
+            await self.coordinator.async_force_refresh()
+            return
+
+        if self.entity_description.press_payload is None:
+            return
+
+        payload = self.entity_description.press_payload(self.coordinator.data)
+        if not payload:
+            raise HomeAssistantError(
+                f"Cannot run '{self.entity_description.name}' until the device "
+                "reports the required capacity data."
+            )
+
+        await self.coordinator.async_write_keys(payload)

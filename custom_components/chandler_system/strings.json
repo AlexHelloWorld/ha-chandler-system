@@ -33,6 +33,13 @@
           "auth_token": "API token from Chandler/Springwell app (Settings > API)",
           "device_name": "A friendly name for this device"
         }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate Chandler Water System",
+        "description": "The valve {name} ({address}) rejected the stored API token. Generate or copy the current token from the Chandler/Springwell app (Settings > API).",
+        "data": {
+          "auth_token": "Authentication Token"
+        }
       }
     },
     "error": {
@@ -41,7 +48,28 @@
       "unknown": "An unknown error occurred."
     },
     "abort": {
-      "already_configured": "This device is already configured."
+      "already_configured": "This device is already configured.",
+      "reauth_successful": "Authentication token updated."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Chandler Water System Options",
+        "description": "Tune BLE polling cadence and automatic valve clock synchronization.",
+        "data": {
+          "poll_interval": "Normal poll interval",
+          "active_flow_poll_interval": "Active water flow poll interval",
+          "auto_sync_clock": "Automatically sync valve clock",
+          "clock_sync_threshold": "Clock drift threshold"
+        },
+        "data_description": {
+          "poll_interval": "Seconds between short BLE polls when idle (default 60s). Each poll connects briefly and closes cleanly with the device reset command.",
+          "active_flow_poll_interval": "Faster poll interval while water flow is > 0 GPM for near real-time usage tracking (0 to disable).",
+          "auto_sync_clock": "Automatically set the valve's clock during a poll whenever drift exceeds the threshold (skipped while regenerating).",
+          "clock_sync_threshold": "Minimum clock drift in seconds before automatically syncing the valve clock."
+        }
+      }
     }
   },
   "entity": {
@@ -61,6 +89,9 @@
       "gallons_since_last_regen": {
         "name": "Gallons Since Last Regeneration"
       },
+      "total_gallons_resettable": {
+        "name": "Gallons Since Reset"
+      },
       "present_flow": {
         "name": "Current Flow Rate"
       },
@@ -76,14 +107,41 @@
       "regen_counter": {
         "name": "Total Regeneration Cycles"
       },
+      "regen_counter_resettable": {
+        "name": "Regenerations Since Reset"
+      },
+      "regen_state": {
+        "name": "Regeneration State"
+      },
+      "regen_stage": {
+        "name": "Regeneration Stage"
+      },
+      "regen_position": {
+        "name": "Regeneration Position"
+      },
+      "regen_step_remaining": {
+        "name": "Regeneration Step Time Remaining"
+      },
+      "regen_total_remaining": {
+        "name": "Regeneration Total Time Remaining"
+      },
+      "brine_soak_remaining": {
+        "name": "Brine Soak Time Remaining"
+      },
+      "cycle_position_times": {
+        "name": "Cycle Position Times"
+      },
       "salt_level": {
         "name": "Salt Level"
       },
       "salt_remaining": {
         "name": "Salt Remaining"
       },
-      "water_hardness": {
-        "name": "Water Hardness"
+      "salt_capacity": {
+        "name": "Salt Tank Capacity"
+      },
+      "reserve_capacity_gallons": {
+        "name": "Reserve Capacity Gallons"
       },
       "battery_level": {
         "name": "Battery Voltage"
@@ -94,35 +152,20 @@
       "valve_error": {
         "name": "Valve Error Detail"
       },
-      "reserve_capacity_gallons": {
-        "name": "Reserve Capacity"
-      },
-      "total_grains_capacity": {
-        "name": "Total Grains Capacity"
-      },
-      "regen_state": {
-        "name": "Regeneration State"
-      },
-      "regen_position": {
-        "name": "Regeneration Position"
-      },
-      "regen_step_remaining": {
-        "name": "Regeneration Step Time Remaining"
-      },
-      "brine_soak_remaining": {
-        "name": "Brine Soak Time Remaining"
-      },
-      "regen_counter_resettable": {
-        "name": "Regenerations Since Reset"
-      },
-      "total_gallons_resettable": {
-        "name": "Gallons Since Reset"
-      },
-      "next_regen_time": {
-        "name": "Scheduled Regeneration Time"
-      },
       "last_error": {
         "name": "Last Error"
+      },
+      "device_time": {
+        "name": "Device Time"
+      },
+      "clock_drift": {
+        "name": "Clock Drift"
+      },
+      "firmware_version": {
+        "name": "Firmware Version"
+      },
+      "valve_type": {
+        "name": "Valve Type"
       },
       "gallons_between_regens": {
         "name": "Gallons Used Last Regeneration Cycle"
@@ -132,17 +175,14 @@
       },
       "peak_flow_history": {
         "name": "Peak Flow Yesterday"
-      },
-      "device_time": {
-        "name": "Device Time"
-      },
-      "clock_drift": {
-        "name": "Clock Drift"
       }
     },
     "binary_sensor": {
       "regen_active_state": {
         "name": "Regeneration Active"
+      },
+      "regen_motor_moving": {
+        "name": "Regeneration Motor Moving"
       },
       "salt_low_state": {
         "name": "Salt Low"
@@ -158,6 +198,9 @@
       }
     },
     "button": {
+      "refresh_now": {
+        "name": "Refresh Now"
+      },
       "regen_now": {
         "name": "Start Regeneration Now"
       },
@@ -169,31 +212,58 @@
       },
       "sync_clock": {
         "name": "Sync Clock"
+      },
+      "refill_salt_tank": {
+        "name": "Refill Salt Tank"
+      },
+      "reset_regen_counter": {
+        "name": "Reset Regeneration Counter"
+      },
+      "reset_gallons_counter": {
+        "name": "Reset Gallons Counter"
       }
     },
     "number": {
-      "set_water_hardness": {
-        "name": "Water Hardness Setting"
+      "water_hardness": {
+        "name": "Water Hardness"
       },
-      "set_day_override": {
+      "day_override": {
         "name": "Day Override"
       },
-      "set_regen_time_hour": {
+      "current_day_override": {
+        "name": "Current Day Override"
+      },
+      "regen_day_override": {
+        "name": "Regen Day Override"
+      },
+      "regen_time_hour": {
         "name": "Regeneration Hour"
       },
-      "set_reserve_capacity": {
-        "name": "Reserve Capacity Setting"
+      "reserve_capacity": {
+        "name": "Reserve Capacity"
       },
-      "set_total_grains": {
-        "name": "Total Grains Capacity Setting"
+      "total_grains_capacity": {
+        "name": "Total Grains Capacity"
       },
       "set_salt_remaining": {
         "name": "Salt Remaining Setting"
+      },
+      "prefill_duration": {
+        "name": "Brine Prefill Duration"
+      },
+      "aeration_days": {
+        "name": "Aeration Days"
+      },
+      "chlorine_pulses": {
+        "name": "Chlorine Pulses"
       }
     },
     "switch": {
       "auto_reserve_mode": {
         "name": "Auto Reserve Mode"
+      },
+      "prefill_enabled": {
+        "name": "Brine Prefill"
       },
       "display_off": {
         "name": "Display Off"
@@ -260,6 +330,20 @@
         "device_id": {
           "name": "Device",
           "description": "The water system to update."
+        }
+      }
+    },
+    "set_cycle_position_times": {
+      "name": "Set cycle position times",
+      "description": "Configures the regeneration step durations (in minutes, or salt pounds for refill steps). Index 0 (service position) is preserved automatically.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The water system to update."
+        },
+        "positions": {
+          "name": "Position times",
+          "description": "List of integers (0–199, or 0–99 for salt pounds) starting at Position 1, e.g. [10, 60, 10, 8]."
         }
       }
     }
