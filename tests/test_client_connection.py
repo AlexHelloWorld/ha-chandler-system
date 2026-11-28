@@ -143,6 +143,18 @@ def fast_timeouts(monkeypatch):
         "custom_components.chandler_system.client.DEVICE_RESET_MIN_DELAY", 0.0
     )
     monkeypatch.setattr(
+        "custom_components.chandler_system.client.AUTH_INITIAL_DATA_WAIT", 0.01
+    )
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.AUTH_INITIAL_DATA_QUIET", 0.01
+    )
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.AUTH_INITIAL_DATA_MAX_WAIT", 0.08
+    )
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.AUTH_TOKEN_RETRY_INTERVAL", 0.02
+    )
+    monkeypatch.setattr(
         "custom_components.chandler_system.client.MIN_SESSION_GAP", 0.0
     )
 
@@ -378,3 +390,258 @@ async def test_disconnect_on_idle_client_is_safe(client):
     assert client._client is None
     assert client.state is ConnectionState.DISCONNECTED
     assert isinstance(client.data, DeviceData)
+
+
+async def test_auth_acks_initial_data_before_sending_token(client):
+    """Per vendor spec, initial post-0xCC data is ACKed before the auth token."""
+    created = []
+
+    class InitialDataBleakClient(FakeBleakClient):
+        async def write_gatt_char(self, char, data, response=False):
+            raw = bytes(data)
+            if raw == bytes([protocol.PACKET_AUTH_REQUEST]):
+                self.written.append(raw)
+                self._emit(bytes([protocol.PACKET_ACK]))
+                self._emit(device_packet({"dlf": 618, "dlvs": 4}))
+                return
+            await super().write_gatt_char(char, data, response=response)
+
+    def make(cb):
+        ble = InitialDataBleakClient(
+            burst_packets=[device_packet({"dwh": 18})], disconnected_cb=cb
+        )
+        created.append(ble)
+        return ble
+
+    with _patch_establish(make):
+        data = await client.async_poll()
+
+    ble = created[0]
+    assert data.firmware_version == 618
+    assert data.valve_series == 4
+    assert data.water_hardness == 18
+    assert ble.written[0] == bytes([protocol.PACKET_AUTH_REQUEST])
+    assert ble.written[1] == bytes([protocol.PACKET_ACK])
+    assert len(ble.written[2]) == 16
+
+
+async def test_auth_waits_for_multi_packet_initial_data_before_token(client):
+    """Split initial JSON packets finish and are ACKed before sending the token."""
+    created = []
+
+    class SplitInitialClient(FakeBleakClient):
+        async def write_gatt_char(self, char, data, response=False):
+            raw = bytes(data)
+            if raw == bytes([protocol.PACKET_AUTH_REQUEST]):
+                self.written.append(raw)
+                self._emit(bytes([protocol.PACKET_ACK]))
+                self._emit(framed(protocol.HEADER_FIRST_PACKET, b'{"dlf":618,'))
+                self._emit(framed(protocol.HEADER_LAST_PACKET, b'"dlvt":1}'))
+                return
+            await super().write_gatt_char(char, data, response=response)
+
+    def make(cb):
+        ble = SplitInitialClient(disconnected_cb=cb)
+        created.append(ble)
+        return ble
+
+    with _patch_establish(make):
+        data = await client.async_poll()
+
+    ble = created[0]
+    assert data.firmware_version == 618
+    assert data.valve_type == 1
+    assert ble.written[:3] == [
+        bytes([protocol.PACKET_AUTH_REQUEST]),
+        bytes([protocol.PACKET_ACK]),
+        bytes([protocol.PACKET_ACK]),
+    ]
+    assert len(ble.written[3]) == 16
+
+
+async def test_auth_ignores_pre_token_unauthenticated_state(client):
+    """An initial {'as': 1} emitted before the token must not raise AuthError."""
+
+    class PreTokenStateClient(FakeBleakClient):
+        async def write_gatt_char(self, char, data, response=False):
+            raw = bytes(data)
+            if raw == bytes([protocol.PACKET_AUTH_REQUEST]):
+                self.written.append(raw)
+                self._emit(bytes([protocol.PACKET_ACK]))
+                self._emit(device_packet({"as": 1, "dlf": 618}))
+                return
+            await super().write_gatt_char(char, data, response=response)
+
+    with _patch_establish(lambda cb: PreTokenStateClient(disconnected_cb=cb)):
+        data = await client.async_poll()
+
+    assert data.firmware_version == 618
+
+
+async def test_auth_sends_token_immediately_on_initial_marco(client, monkeypatch):
+    """An idle MARCO right after 0xCC sends POLO + token without waiting."""
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.AUTH_INITIAL_DATA_WAIT", 5.0
+    )
+    created = []
+
+    class ImmediateMarcoClient(FakeBleakClient):
+        async def write_gatt_char(self, char, data, response=False):
+            raw = bytes(data)
+            if raw == bytes([protocol.PACKET_AUTH_REQUEST]):
+                self.written.append(raw)
+                self._emit(bytes([protocol.PACKET_ACK]))
+                self._emit(bytes([protocol.PACKET_MARCO]))
+                return
+            await super().write_gatt_char(char, data, response=response)
+
+    def make(cb):
+        ble = ImmediateMarcoClient(disconnected_cb=cb)
+        created.append(ble)
+        return ble
+
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    with _patch_establish(make):
+        await client.async_poll()
+    assert loop.time() - t0 < 1.0
+    assert created[0].written[1] == bytes([protocol.PACKET_POLO])
+    assert len(created[0].written[2]) == 16
+
+
+async def test_auth_retries_dropped_token_on_idle_marco(client):
+    """If the first raw token is silently dropped, MARCO triggers a retry."""
+    created = []
+
+    class DropFirstTokenClient(FakeBleakClient):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.token_writes = 0
+
+        async def write_gatt_char(self, char, data, response=False):
+            raw = bytes(data)
+            if not self._authenticated and len(raw) == 16:
+                self.written.append(raw)
+                self.token_writes += 1
+                if self.token_writes == 1:
+                    # Simulate valve missing the token and pinging MARCO.
+                    async def send_marcos():
+                        await asyncio.sleep(0.005)
+                        self._emit(bytes([protocol.PACKET_MARCO]))
+                        await asyncio.sleep(0.025)
+                        self._emit(bytes([protocol.PACKET_MARCO]))
+
+                    asyncio.create_task(send_marcos())
+                    return
+                self._authenticated = True
+                self._emit(device_packet({"as": 2}))
+                self._emit(device_packet({"dwh": 12}))
+                return
+            await super().write_gatt_char(char, data, response=response)
+
+    def make(cb):
+        ble = DropFirstTokenClient(disconnected_cb=cb)
+        created.append(ble)
+        return ble
+
+    with _patch_establish(make):
+        data = await client.async_poll()
+
+    assert created[0].token_writes == 2
+    assert data.water_hardness == 12
+
+
+async def test_auth_timeout_reports_overall_deadline_and_caps_retries(
+    client, monkeypatch
+):
+    """Repeated MARCOs without {'as': 2} report AUTH_TIMEOUT and cap retries."""
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.AUTH_TIMEOUT", 0.14
+    )
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.AUTH_REPLY_TIMEOUT", 0.5
+    )
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.AUTH_TOKEN_RETRY_INTERVAL", 0.02
+    )
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.AUTH_TOKEN_MAX_ATTEMPTS", 3
+    )
+    created = []
+    marco_tasks = []
+
+    class EndlessMarcoClient(FakeBleakClient):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.token_writes = 0
+
+        async def write_gatt_char(self, char, data, response=False):
+            raw = bytes(data)
+            if raw == bytes([protocol.PACKET_AUTH_REQUEST]):
+                self.written.append(raw)
+                self._emit(bytes([protocol.PACKET_ACK]))
+
+                async def keep_alive():
+                    while self.is_connected:
+                        await asyncio.sleep(0.015)
+                        if self.is_connected:
+                            self._emit(bytes([protocol.PACKET_MARCO]))
+
+                marco_tasks.append(asyncio.create_task(keep_alive()))
+                return
+            if not self._authenticated and len(raw) == 16:
+                self.written.append(raw)
+                self.token_writes += 1
+                return
+            await super().write_gatt_char(char, data, response=response)
+
+    def make(cb):
+        ble = EndlessMarcoClient(disconnected_cb=cb)
+        created.append(ble)
+        return ble
+
+    try:
+        with _patch_establish(make):
+            with pytest.raises(
+                ChandlerConnectionError,
+                match=r"Authentication timed out after .*ack=True, token_attempts=3",
+            ):
+                await client.async_poll()
+    finally:
+        for task in marco_tasks:
+            task.cancel()
+        await asyncio.gather(*marco_tasks, return_exceptions=True)
+
+    assert created[0].token_writes == 3
+
+
+async def test_auth_silence_reports_per_packet_timeout(client, monkeypatch):
+    """Complete radio silence before AUTH_TIMEOUT reports No reply with context."""
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.AUTH_TIMEOUT", 1.0
+    )
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.AUTH_REPLY_TIMEOUT", 0.03
+    )
+
+    class SilentClient(FakeBleakClient):
+        async def write_gatt_char(self, char, data, response=False):
+            self.written.append(bytes(data))
+
+    with _patch_establish(lambda cb: SilentClient(disconnected_cb=cb)):
+        with pytest.raises(
+            ChandlerConnectionError,
+            match=r"No reply from device during authentication .*ack=False",
+        ):
+            await client.async_poll()
+
+
+async def test_auth_token_is_redacted_in_debug_logs(client, caplog):
+    """Debug logs must never expose the raw 16-byte authentication token."""
+    token_hex = "8dffdfbd40cc4b868df81d48463b20f1"
+    with caplog.at_level("DEBUG", logger="custom_components.chandler_system.client"):
+        with _patch_establish(lambda cb: FakeBleakClient(disconnected_cb=cb)):
+            await client.async_poll()
+
+    assert token_hex not in caplog.text.lower()
+    assert "Sending: <REDACTED>" in caplog.text

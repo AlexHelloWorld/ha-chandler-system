@@ -130,6 +130,15 @@ def fast_timeouts(monkeypatch):
         "custom_components.chandler_system.client.DEVICE_RESET_MIN_DELAY", 0.0
     )
     monkeypatch.setattr(
+        "custom_components.chandler_system.client.AUTH_INITIAL_DATA_WAIT", 0.01
+    )
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.AUTH_INITIAL_DATA_QUIET", 0.01
+    )
+    monkeypatch.setattr(
+        "custom_components.chandler_system.client.AUTH_INITIAL_DATA_MAX_WAIT", 0.05
+    )
+    monkeypatch.setattr(
         "custom_components.chandler_system.client.MIN_SESSION_GAP", 0.0
     )
 

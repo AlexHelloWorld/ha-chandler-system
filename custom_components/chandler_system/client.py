@@ -36,6 +36,17 @@ WRITE_ACK_TIMEOUT = 5.0
 AUTH_TIMEOUT = 20.0
 # How long to wait for any single reply during the handshake.
 AUTH_REPLY_TIMEOUT = 8.0
+# After the valve ACKs 0xEA, pause briefly so we receive and ACK any initial
+# unauthenticated data burst before writing the raw 16-byte auth token.
+AUTH_INITIAL_DATA_WAIT = 0.5
+# Quiet window after an initial packet completes before sending the token.
+AUTH_INITIAL_DATA_QUIET = 0.15
+# Upper bound on draining initial post-0xCC data before sending the token.
+AUTH_INITIAL_DATA_MAX_WAIT = 2.0
+# Minimum idle interval after sending the token before retrying it on MARCO.
+AUTH_TOKEN_RETRY_INTERVAL = 2.0
+# Maximum number of times to transmit the auth token within one handshake.
+AUTH_TOKEN_MAX_ATTEMPTS = 4
 # Wait this long after the last data packet before ending a poll drain.
 POLL_BURST_QUIET_TIMEOUT = 1.5
 # Maximum wait for the first post-auth data packet before assuming dump is done.
@@ -535,12 +546,14 @@ class ChandlerClient:
             _LOGGER.debug("Waiting %.2fs inter-session cooldown", remaining)
             await asyncio.sleep(remaining)
 
-    async def _send_packet(self, data: bytes | bytearray) -> None:
+    async def _send_packet(
+        self, data: bytes | bytearray, *, redact: bool = False
+    ) -> None:
         """Send a raw packet to the valve's write characteristic."""
         if self._client is None or not self._client.is_connected:
             raise ChandlerWriteError("Bluetooth link is not connected")
 
-        _LOGGER.debug("Sending: %s", data.hex())
+        _LOGGER.debug("Sending: %s", "<REDACTED>" if redact else data.hex())
         await self._client.write_gatt_char(
             CHAR_UUID_WRITE, data, response=False
         )
@@ -554,6 +567,12 @@ class ChandlerClient:
     async def _authenticate(self, target: DeviceData) -> None:
         """Authenticate with the valve on the currently open BLE link.
 
+        Follows the vendor handshake order: send ``0xEA``, wait for ``0xCC``,
+        receive and ACK any initial unauthenticated data burst, then transmit
+        the raw 16-byte auth token. Because the token has no ACK and the valve
+        stays in a MARCO/POLO keep-alive loop until a valid token is accepted,
+        re-send the token on idle keep-alives if no ``as`` reply arrives.
+
         Raises ChandlerAuthError if the token is explicitly rejected, or
         ChandlerConnectionError on timeout or transport drop.
         """
@@ -564,8 +583,43 @@ class ChandlerClient:
             protocol.build_status_packet(protocol.PACKET_AUTH_REQUEST)
         )
 
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + AUTH_TIMEOUT
+        ack_received = False
+        ack_at = 0.0
+        initial_data_seen = False
+        last_initial_data_at = 0.0
         token_sent = False
-        deadline = asyncio.get_running_loop().time() + AUTH_TIMEOUT
+        token_attempts = 0
+        last_token_sent_at = 0.0
+        last_post_token_data_at = 0.0
+        pre_token_data_packets = 0
+        post_token_data_packets = 0
+        marco_count = 0
+
+        async def _send_auth_token(reason: str) -> None:
+            nonlocal token_sent, token_attempts, last_token_sent_at
+            # Clear any pre-token {"as": 1} from the initial unauthenticated dump.
+            target.auth_state = None
+            token_attempts += 1
+            if token_attempts > 1:
+                _LOGGER.debug(
+                    "Re-sending auth token (attempt %d/%d, %s)",
+                    token_attempts,
+                    AUTH_TOKEN_MAX_ATTEMPTS,
+                    reason,
+                )
+            await self._send_packet(self._auth_token, redact=True)
+            token_sent = True
+            last_token_sent_at = loop.time()
+
+        def _timeout_summary() -> str:
+            return (
+                f"ack={ack_received}, token_attempts={token_attempts}, "
+                f"pre_pkts={pre_token_data_packets}, "
+                f"post_pkts={post_token_data_packets}, "
+                f"marcos={marco_count}, state={target.auth_state}"
+            )
 
         while True:
             if self._disconnect_event.is_set() or (
@@ -575,31 +629,88 @@ class ChandlerClient:
                     "Bluetooth link dropped during authentication"
                 )
 
-            remaining = deadline - asyncio.get_running_loop().time()
+            now = loop.time()
+            remaining = deadline - now
             if remaining <= 0:
                 raise ChandlerConnectionError(
-                    f"Authentication timed out after {AUTH_TIMEOUT}s "
-                    f"(state: {target.auth_state})"
+                    f"Authentication timed out after {AUTH_TIMEOUT:.0f}s "
+                    f"({_timeout_summary()})"
                 )
 
-            wait = min(remaining, AUTH_REPLY_TIMEOUT)
+            waiting_initial = ack_received and not token_sent
+            if waiting_initial:
+                max_left = (ack_at + AUTH_INITIAL_DATA_MAX_WAIT) - now
+                if max_left <= 0:
+                    await _send_auth_token("initial burst ceiling")
+                    continue
+                if initial_data_seen and not self._data_buffer:
+                    quiet_left = (
+                        last_initial_data_at + AUTH_INITIAL_DATA_QUIET
+                    ) - now
+                    if quiet_left <= 0:
+                        await _send_auth_token("initial burst settled")
+                        continue
+                    wait = min(remaining, max_left, quiet_left)
+                elif self._data_buffer:
+                    wait = min(remaining, max_left)
+                else:
+                    init_left = (ack_at + AUTH_INITIAL_DATA_WAIT) - now
+                    if init_left <= 0:
+                        await _send_auth_token("no initial data")
+                        continue
+                    wait = min(remaining, max_left, init_left)
+            else:
+                wait = min(remaining, AUTH_REPLY_TIMEOUT)
+
             try:
                 data = await self._wait_for_response(timeout=wait)
             except asyncio.TimeoutError as err:
+                if loop.time() >= deadline:
+                    raise ChandlerConnectionError(
+                        f"Authentication timed out after {AUTH_TIMEOUT:.0f}s "
+                        f"({_timeout_summary()})"
+                    ) from err
+                if waiting_initial:
+                    if self._data_buffer and (
+                        loop.time() < ack_at + AUTH_INITIAL_DATA_MAX_WAIT
+                    ):
+                        continue
+                    await _send_auth_token("initial wait elapsed")
+                    continue
+                if remaining <= AUTH_REPLY_TIMEOUT:
+                    raise ChandlerConnectionError(
+                        f"Authentication timed out after {AUTH_TIMEOUT:.0f}s "
+                        f"({_timeout_summary()})"
+                    ) from err
                 raise ChandlerConnectionError(
-                    f"No reply from device during authentication (waited {wait:.1f}s)"
+                    f"No reply from device during authentication "
+                    f"(waited {wait:.1f}s, {_timeout_summary()})"
                 ) from err
 
-            if not token_sent and protocol.classify_status(data) is StatusPacket.ACK:
-                await self._send_packet(self._auth_token)
-                token_sent = True
+            status = protocol.classify_status(data)
+            if not ack_received and status is StatusPacket.ACK:
+                ack_received = True
+                ack_at = loop.time()
                 continue
 
-            await self._handle_incoming(data, target)
+            if status is StatusPacket.MARCO:
+                marco_count += 1
+
+            result = await self._handle_incoming(data, target)
+            if result is True:
+                if token_sent:
+                    post_token_data_packets += 1
+                    last_post_token_data_at = loop.time()
+                else:
+                    pre_token_data_packets += 1
+                    initial_data_seen = True
+                    last_initial_data_at = loop.time()
 
             if target.auth_state == AUTH_STATE_AUTHENTICATED:
                 self._state = ConnectionState.CONNECTED
-                _LOGGER.debug("Authentication successful")
+                _LOGGER.debug(
+                    "Authentication successful (%s)", _timeout_summary()
+                )
                 return
 
             if token_sent and target.auth_state == AUTH_STATE_NOT_AUTHENTICATED:
@@ -607,6 +718,26 @@ class ChandlerClient:
                     "Device rejected the authentication token. Generate a new "
                     "one in the Chandler/Springwell app and reconfigure."
                 )
+
+            if (
+                status in (StatusPacket.MARCO, StatusPacket.TIMEOUT_QUERY)
+                and not self._data_buffer
+            ):
+                if ack_received and not token_sent:
+                    await _send_auth_token("idle keep-alive")
+                elif (
+                    token_sent
+                    and target.auth_state in (None, 0)
+                    and token_attempts < AUTH_TOKEN_MAX_ATTEMPTS
+                ):
+                    last_activity = max(
+                        last_token_sent_at, last_post_token_data_at
+                    )
+                    if (
+                        loop.time() - last_activity
+                        >= AUTH_TOKEN_RETRY_INTERVAL
+                    ):
+                        await _send_auth_token("idle keep-alive")
 
     async def _process_packet(self, data: bytes, target: DeviceData) -> bool:
         """Validate a received data packet, ACK/NAK it, and parse complete JSON.
@@ -654,6 +785,11 @@ class ChandlerClient:
 
         except (json.JSONDecodeError, UnicodeDecodeError) as err:
             _LOGGER.warning("Failed to parse JSON: %s", err)
+            _LOGGER.debug(
+                "Unparseable JSON buffer (%d bytes): %s",
+                len(self._data_buffer),
+                self._data_buffer.hex(),
+            )
 
     def _map_json_to_data(
         self, json_data: dict[str, Any], target: DeviceData | None = None
